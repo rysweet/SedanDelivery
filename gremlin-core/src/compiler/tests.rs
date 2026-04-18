@@ -1,7 +1,13 @@
 //! Compiler test suite. Extracted from the original `compiler.rs` body —
 //! contents identical, only the file boundary changed.
 
+use cypher_core::ast::{BinaryOp, Direction, Expr, Identifier};
+use cypher_core::planner::{AggFunction, GremlinSelectTraversal, Operator, SetItem};
+use smol_str::SmolStr;
+
 use super::*;
+use crate::bytecode::{GremlinStep, Predicate};
+use crate::types::GremlinValue;
 
 #[test]
 fn compile_v_scan() {
