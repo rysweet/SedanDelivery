@@ -132,8 +132,17 @@ jobs:
         # compilable and correct.
         run: cargo test --doc -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded
 
-      - name: Run GQL outside-in contract tests
-        run: cargo test -p gql-engine --test outside_in
+      - name: Run full gql-engine test suite
+        # Includes outside_in, concurrency, value_pressure, fuzz_rewrite,
+        # parity, and unit_parser — all of which exercise gql-engine's public
+        # API and are wrapped one-for-one by sedan-gql-embedded::SedanGql.
+        run: cargo test -p gql-engine
+
+      - name: Run Gremlin TCK (1672 scenarios)
+        # TinkerPop Gremlin TCK — text → bytecode → compiler → executor.
+        # Runs in <2min on CI hardware; failures here directly indicate a
+        # regression in the Gremlin engine that backs sedan-gremlin-embedded.
+        run: cargo test -p gremlin-tck --test gremlin_tck
 
       # ── sedandelivery-bolt & Fabric sync checks ─────────────────────────
       - name: Build sedandelivery-bolt
