@@ -13,6 +13,7 @@ A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 
 - [**Product Surface Reference**](reference/product-surfaces) — Current runtime and distribution surfaces, plus the live embedded comparison baselines
 - [**Embedded Engines Reference**](reference/embedded-engines) — Current public API, isolation contract, and wiring for the in-process libraries
 - [**Tutorial: Embed SedanDelivery In-Process**](tutorials/embed-sedandelivery) — Embedded quick start for Cypher, GQL, and Gremlin, including isolation and representative error behavior
+- [**How-To: Pick Your Embedded Engine**](howto/pick-embedded-engine) — Decision matrix for choosing between `sedan-cypher-embedded`, `sedan-gql-embedded`, and `sedan-gremlin-embedded`
 - [**Deploy Your Own Instance**](DEPLOY) — Full production deployment guide: prerequisites, Azure setup, scaling, HA, troubleshooting
 - [**Auto-Scaling Guide**](auto-scaling) — Horizontal scaling: architecture, write safety, KEDA metrics, connection lifecycle, testing, and configuration reference
 - [**Redis Cluster Mode**](cluster-mode) — Deploy against Redis Cluster: setup, validation, slot-local routing, and resharding checks
