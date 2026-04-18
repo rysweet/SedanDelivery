@@ -18,6 +18,7 @@ members = [
     "tests/gremlin-tck",
     "gql-engine",
 ]
+exclude = ["examples/embedded-consumer"]
 resolver = "2"
 
 [workspace.package]

@@ -1,0 +1,37 @@
+name: Embedded Consumer Example
+
+on:
+  pull_request:
+    paths:
+      - 'examples/embedded-consumer/**'
+      - 'sedan-cypher-embedded/**'
+      - 'sedan-gql-embedded/**'
+      - 'sedan-gremlin-embedded/**'
+      - 'cypher-core/**'
+      - 'gql-engine/**'
+      - 'gremlin-core/**'
+      - '.github/workflows/embedded-consumer-example.yml'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-run:
+    name: Build & run downstream-consumer example
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Install libclang
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+      - name: Build example
+        working-directory: examples/embedded-consumer
+        run: cargo build --release
+      - name: Run example
+        working-directory: examples/embedded-consumer
+        run: cargo run --release

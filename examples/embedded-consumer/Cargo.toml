@@ -1,0 +1,24 @@
+[package]
+name = "embedded-consumer-example"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Example: build a small Rust app that uses the SedanDelivery embedded graph engines as a library."
+
+# This example is intentionally a SEPARATE workspace so it demonstrates the
+# minimum a downstream consumer needs in their own Cargo.toml. The main
+# workspace excludes it (see the workspace-level [workspace] table).
+[workspace]
+
+[dependencies]
+# In a real consumer crate you would pin to a published version, e.g.:
+#   sedan-cypher-embedded = "0.1"
+#   sedan-gql-embedded    = "0.1"
+#   sedan-gremlin-embedded = "0.1"
+#
+# For this in-repo example we use path deps so the example always builds
+# against the current workspace sources.
+sedan-cypher-embedded   = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded      = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded  = { path = "../../sedan-gremlin-embedded" }
+indexmap = "2"
