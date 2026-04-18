@@ -3,6 +3,8 @@ name    = "gql-engine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+readme  = "README.md"
+description = "ISO/IEC 39075 (GQL) query processor built on cypher-core"
 
 [features]
 default    = []
@@ -15,4 +17,9 @@ smol_str    = { workspace = true }
 tracing     = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
+proptest  = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name    = "gql_parse"
+harness = false

@@ -1494,6 +1494,7 @@ dependencies = [
 name = "gql-engine"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "cypher-core",
  "proptest",
  "smol_str",
@@ -3733,8 +3734,10 @@ dependencies = [
 name = "sedan-gql-embedded"
 version = "0.1.0"
 dependencies = [
+ "cypher-core",
  "gql-engine",
- "indexmap",
+ "proptest",
+ "sedan-cypher-embedded",
 ]
 
 [[package]]

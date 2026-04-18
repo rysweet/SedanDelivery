@@ -239,8 +239,7 @@ pub fn normalise_gql_source(src: &str) -> String {
 fn collect_until_clause(tokens: &[RewriteToken<'_>], i: &mut usize) -> String {
     let mut expr_tokens = Vec::new();
     while *i < tokens.len() {
-        let tok_upper = tokens[*i].text.to_ascii_uppercase();
-        if CLAUSE_KEYWORDS.contains(&tok_upper.as_str()) {
+        if is_clause_keyword(tokens[*i].text) {
             break;
         }
         expr_tokens.push(tokens[*i].text);
@@ -250,13 +249,22 @@ fn collect_until_clause(tokens: &[RewriteToken<'_>], i: &mut usize) -> String {
     expr_str.trim().to_owned()
 }
 
+/// Check if a token is a clause keyword (case-insensitive) without allocating.
+fn is_clause_keyword(text: &str) -> bool {
+    CLAUSE_KEYWORDS
+        .iter()
+        .any(|kw| text.eq_ignore_ascii_case(kw))
+}
+
 /// Extract GQL-specific metadata from the source before normalisation.
+///
+/// Uses case-insensitive matching on the original source to avoid
+/// allocating a full uppercase copy.
 pub fn extract_gql_metadata(src: &str) -> GqlMetadata {
-    let upper = src.to_ascii_uppercase();
     let mut meta = GqlMetadata::default();
 
     // Check for MANDATORY MATCH
-    if upper.contains("MANDATORY") && upper.contains("MATCH") {
+    if contains_word_ci(src, "MANDATORY") && contains_word_ci(src, "MATCH") {
         meta.mandatory_match = true;
     }
 
@@ -267,36 +275,78 @@ pub fn extract_gql_metadata(src: &str) -> GqlMetadata {
         ("SIMPLE", PathMode::Simple),
         ("ACYCLIC", PathMode::Acyclic),
     ] {
-        if contains_word(&upper, keyword) {
+        if contains_word_ci(src, keyword) {
             meta.path_mode = Some(*mode);
             break;
         }
     }
 
     // Check for path search modifiers (order matters: check compound first)
-    if upper.contains("ANY SHORTEST") || upper.contains("ANY  SHORTEST") {
+    if contains_phrase_ci(src, "ANY SHORTEST") {
         meta.path_search = Some(PathSearch::AnyShortest);
-    } else if upper.contains("ALL SHORTEST") || upper.contains("ALL  SHORTEST") {
+    } else if contains_phrase_ci(src, "ALL SHORTEST") {
         meta.path_search = Some(PathSearch::AllShortest);
-    } else if contains_match_modifier(&upper, "ANY") {
+    } else if contains_match_modifier_ci(src, "ANY") {
         meta.path_search = Some(PathSearch::Any);
-    } else if contains_match_modifier(&upper, "ALL") {
+    } else if contains_match_modifier_ci(src, "ALL") {
         meta.path_search = Some(PathSearch::All);
     }
 
     meta
 }
 
-/// Check if a keyword appears as a MATCH modifier (i.e. "MATCH ANY (" pattern).
-fn contains_match_modifier(upper: &str, keyword: &str) -> bool {
-    // Look for "MATCH <ws> keyword <ws> (" pattern
-    if let Some(match_pos) = upper.find("MATCH") {
-        let after_match = &upper[match_pos + 5..];
-        let trimmed = after_match.trim_start();
-        if let Some(after_kw) = trimmed.strip_prefix(keyword) {
-            let next_char = after_kw.as_bytes().first();
-            // Must be followed by whitespace or '(' (not alphanumeric)
-            if next_char.is_none_or(|c| !c.is_ascii_alphanumeric()) {
+/// Case-insensitive check if a keyword appears as a MATCH modifier
+/// (i.e. "MATCH ANY (" pattern). Does not allocate.
+fn contains_match_modifier_ci(src: &str, keyword: &str) -> bool {
+    // Find "MATCH" case-insensitively, then check if keyword follows
+    let src_bytes = src.as_bytes();
+    let match_kw = b"MATCH";
+    if src_bytes.len() < match_kw.len() {
+        return false;
+    }
+    for start in 0..=(src_bytes.len() - match_kw.len()) {
+        if src_bytes[start..start + 5].eq_ignore_ascii_case(match_kw) {
+            // Word boundary check before MATCH to avoid matching e.g. "REMATCH".
+            let before_ok = start == 0 || !src_bytes[start - 1].is_ascii_alphanumeric();
+            if !before_ok {
+                continue;
+            }
+            // Word boundary check after MATCH to avoid matching e.g. "MATCHANY".
+            let pos_after_match = start + 5;
+            if pos_after_match < src_bytes.len()
+                && src_bytes[pos_after_match].is_ascii_alphanumeric()
+            {
+                continue;
+            }
+            let after_match = &src[start + 5..];
+            let trimmed = after_match.trim_start();
+            if trimmed.len() >= keyword.len()
+                && trimmed.as_bytes()[..keyword.len()].eq_ignore_ascii_case(keyword.as_bytes())
+            {
+                let after_kw = &trimmed[keyword.len()..];
+                let next_char = after_kw.as_bytes().first();
+                if next_char.is_none_or(|c| !c.is_ascii_alphanumeric()) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Case-insensitive word-boundary check without allocating.
+fn contains_word_ci(haystack: &str, word: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let wbytes = word.as_bytes();
+    if wbytes.len() > bytes.len() {
+        return false;
+    }
+    for start in 0..=(bytes.len() - wbytes.len()) {
+        if bytes[start..start + wbytes.len()].eq_ignore_ascii_case(wbytes) {
+            let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+            let after_ok = start + wbytes.len() == bytes.len()
+                || !bytes[start + wbytes.len()].is_ascii_alphanumeric();
+            if before_ok && after_ok {
                 return true;
             }
         }
@@ -304,20 +354,57 @@ fn contains_match_modifier(upper: &str, keyword: &str) -> bool {
     false
 }
 
-/// Simple word-boundary check: keyword appears surrounded by non-alphanumeric chars.
-fn contains_word(haystack: &str, word: &str) -> bool {
-    let bytes = haystack.as_bytes();
-    let wbytes = word.as_bytes();
-    if wbytes.len() > bytes.len() {
+/// Case-insensitive phrase search (words separated by whitespace).
+fn contains_phrase_ci(haystack: &str, phrase: &str) -> bool {
+    // Split phrase into words and search for them in sequence
+    let phrase_words: Vec<&str> = phrase.split_whitespace().collect();
+    if phrase_words.is_empty() {
         return false;
     }
-    for start in 0..=(bytes.len() - wbytes.len()) {
-        if &bytes[start..start + wbytes.len()] == wbytes {
+    // Simple approach: find first word, then check if second follows
+    let bytes = haystack.as_bytes();
+    let first = phrase_words[0].as_bytes();
+    if first.len() > bytes.len() {
+        return false;
+    }
+    for start in 0..=(bytes.len() - first.len()) {
+        if bytes[start..start + first.len()].eq_ignore_ascii_case(first) {
+            // Word boundary check before the first word so we don't match
+            // e.g. "ANY SHORTEST" inside "MANY SHORTEST".
             let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
-            let after_ok = start + wbytes.len() == bytes.len()
-                || !bytes[start + wbytes.len()].is_ascii_alphanumeric();
-            if before_ok && after_ok {
-                return true;
+            if !before_ok {
+                continue;
+            }
+            // Check remaining words follow (with whitespace between)
+            let mut pos = start + first.len();
+            // The character immediately after the first word must also be a
+            // word boundary so that the first phrase word is matched as a
+            // whole token (e.g. "ANY" not "ANYTHING").
+            if pos < bytes.len() && bytes[pos].is_ascii_alphanumeric() {
+                continue;
+            }
+            let mut matched = true;
+            for word in &phrase_words[1..] {
+                // Skip whitespace
+                while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+                    pos += 1;
+                }
+                let wb = word.as_bytes();
+                if pos + wb.len() > bytes.len()
+                    || !bytes[pos..pos + wb.len()].eq_ignore_ascii_case(wb)
+                {
+                    matched = false;
+                    break;
+                }
+                pos += wb.len();
+            }
+            if matched {
+                // Trailing word boundary check on the last phrase word so that
+                // "ALL SHORTEST" doesn't match inside "ALL SHORTESTPATH".
+                let after_ok = pos == bytes.len() || !bytes[pos].is_ascii_alphanumeric();
+                if after_ok {
+                    return true;
+                }
             }
         }
     }
@@ -331,7 +418,8 @@ struct RewriteToken<'a> {
 
 /// Split source into word tokens and non-word tokens for rewriting.
 fn tokenise_for_rewrite(src: &str) -> Vec<RewriteToken<'_>> {
-    let mut tokens = Vec::new();
+    // Average token length ~4 chars gives a reasonable initial capacity.
+    let mut tokens = Vec::with_capacity(src.len() / 4 + 1);
     let bytes = src.as_bytes();
     let mut i = 0;
 
@@ -366,216 +454,48 @@ fn tokenise_for_rewrite(src: &str) -> Vec<RewriteToken<'_>> {
     tokens
 }
 
+// Full unit tests for this module are in tests/unit_parser.rs and tests/fuzz_rewrite.rs.
+
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod word_boundary_regression {
+    use super::{contains_match_modifier_ci, contains_phrase_ci};
 
+    // Regression for the word-boundary bug in `contains_phrase_ci`: matching a
+    // phrase like "ANY SHORTEST" must not succeed inside a longer identifier
+    // such as "MANY SHORTEST" or "ALL SHORTESTPATH".
     #[test]
-    fn normalise_insert_to_create() {
-        let src = "INSERT (n:Person {name: 'Alice'})";
-        let out = normalise_gql_source(src);
-        assert!(out.starts_with("CREATE"));
-        assert!(out.contains("Person"));
+    fn phrase_ci_requires_leading_word_boundary() {
+        assert!(!contains_phrase_ci("MATCH MANY SHORTEST", "ANY SHORTEST"));
+        assert!(!contains_phrase_ci("MATCH BALL SHORTEST", "ALL SHORTEST"));
+        assert!(contains_phrase_ci("MATCH ANY SHORTEST", "ANY SHORTEST"));
+        assert!(contains_phrase_ci("match any shortest", "ANY SHORTEST"));
     }
 
     #[test]
-    fn normalise_mandatory_match() {
-        let src = "MANDATORY MATCH (n) RETURN n";
-        let out = normalise_gql_source(src);
-        assert!(!out.contains("MANDATORY"));
-        assert!(out.contains("MATCH"));
-        let meta = extract_gql_metadata(src);
-        assert!(meta.mandatory_match);
+    fn phrase_ci_requires_trailing_word_boundary() {
+        assert!(!contains_phrase_ci(
+            "MATCH ALL SHORTESTPATH",
+            "ALL SHORTEST"
+        ));
+        assert!(contains_phrase_ci("MATCH ALL SHORTEST (p)", "ALL SHORTEST"));
     }
 
+    // Regression for the word-boundary bug in `contains_match_modifier_ci`:
+    // an identifier like "REMATCH" must not satisfy the "MATCH ..." prefix.
     #[test]
-    fn normalise_filter_clause() {
-        let src = "MATCH (n) FILTER n.age > 21 RETURN n";
-        let out = normalise_gql_source(src);
-        assert!(out.contains("WHERE"));
-        assert!(!out.contains("FILTER"));
+    fn match_modifier_ci_requires_leading_word_boundary() {
+        assert!(!contains_match_modifier_ci("REMATCH ANY (p)", "ANY"));
+        assert!(!contains_match_modifier_ci("PREMATCH ALL (p)", "ALL"));
+        assert!(contains_match_modifier_ci("MATCH ANY (p)", "ANY"));
+        assert!(contains_match_modifier_ci("match all (p)", "ALL"));
     }
 
+    // Regression for cycle-2 finding: "MATCH" without trailing whitespace must
+    // not match the modifier even if the next chars look like the keyword.
     #[test]
-    fn normalise_filter_function_preserved() {
-        let src = "RETURN filter(x IN [1,2,3] WHERE x > 1)";
-        let out = normalise_gql_source(src);
-        assert!(out.contains("filter"));
-    }
-
-    #[test]
-    fn extract_path_mode_trail() {
-        let src = "MATCH TRAIL (a)-[*]->(b) RETURN a, b";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_mode, Some(PathMode::Trail));
-    }
-
-    #[test]
-    fn extract_path_search_any_shortest() {
-        let src = "MATCH ANY SHORTEST (a)-[*]->(b) RETURN a, b";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_search, Some(PathSearch::AnyShortest));
-    }
-
-    #[test]
-    fn plain_cypher_unchanged() {
-        let src = "MATCH (n:Person) WHERE n.age > 21 RETURN n";
-        let out = normalise_gql_source(src);
-        assert_eq!(out, src);
-    }
-
-    // --- TDD: New GQL keyword rewrite tests ---
-
-    #[test]
-    fn normalise_let_to_with() {
-        // GQL uses LET for computed bindings; cypher-core uses WITH *, expr AS x
-        let src = "MATCH (n:Person) LET fullName = n.firstName RETURN fullName";
-        let out = normalise_gql_source(src);
-        assert!(out.contains("WITH *,"), "expected LET→WITH *, got: {out}");
-        assert!(out.contains("AS fullName"), "expected AS alias, got: {out}");
-        assert!(!contains_word(&out.to_ascii_uppercase(), "LET"));
-    }
-
-    #[test]
-    fn normalise_for_to_unwind() {
-        // GQL uses FOR instead of UNWIND
-        let src = "FOR x IN [1, 2, 3] RETURN x";
-        let out = normalise_gql_source(src);
-        assert!(out.contains("UNWIND"), "expected FOR→UNWIND, got: {out}");
-        assert!(!contains_word(&out.to_ascii_uppercase(), "FOR"));
-    }
-
-    #[test]
-    fn normalise_for_preserves_foreach() {
-        // FOR inside FOREACH should not be double-rewritten
-        let src = "MATCH (n) RETURN n FOR n IN nodes(p)";
-        let out = normalise_gql_source(src);
-        // The standalone FOR should become UNWIND
-        assert!(out.contains("UNWIND"), "expected FOR→UNWIND, got: {out}");
-    }
-
-    #[test]
-    fn normalise_insert_case_insensitive() {
-        let src = "insert (n:Person {name: 'Alice'})";
-        let out = normalise_gql_source(src);
-        assert!(
-            out.starts_with("CREATE"),
-            "expected insert→CREATE, got: {out}"
-        );
-    }
-
-    #[test]
-    fn normalise_filter_case_insensitive() {
-        let src = "MATCH (n) filter n.age > 21 RETURN n";
-        let out = normalise_gql_source(src);
-        assert!(out.contains("WHERE"), "expected filter→WHERE, got: {out}");
-    }
-
-    #[test]
-    fn normalise_filter_where_variant() {
-        // GQL allows "FILTER WHERE" as a synonym for "FILTER"
-        let src = "MATCH (n:Person) FILTER WHERE n.age > 21 RETURN n";
-        let out = normalise_gql_source(src);
-        // Should produce "WHERE n.age > 21" (strip the redundant WHERE after FILTER)
-        assert!(
-            out.contains("WHERE"),
-            "expected WHERE in output, got: {out}"
-        );
-        // Should not contain double WHERE
-        let where_count = out.matches("WHERE").count();
-        assert_eq!(
-            where_count, 1,
-            "expected single WHERE, got {where_count} in: {out}"
-        );
-    }
-
-    #[test]
-    fn normalise_multiple_gql_keywords() {
-        // Query using multiple GQL-specific keywords at once
-        let src = "INSERT (n:Person {name: 'Alice'}) LET x = n.name FILTER x = 'Alice' RETURN x";
-        let out = normalise_gql_source(src);
-        assert!(out.contains("CREATE"), "INSERT→CREATE");
-        assert!(out.contains("WITH"), "LET→WITH");
-        assert!(out.contains("WHERE"), "FILTER→WHERE");
-    }
-
-    // --- TDD: Path mode metadata extraction ---
-
-    #[test]
-    fn extract_path_mode_walk() {
-        let src = "MATCH WALK (a)-[*]->(b) RETURN a";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_mode, Some(PathMode::Walk));
-    }
-
-    #[test]
-    fn extract_path_mode_simple() {
-        let src = "MATCH SIMPLE (a)-[*]->(b) RETURN a";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_mode, Some(PathMode::Simple));
-    }
-
-    #[test]
-    fn extract_path_mode_acyclic() {
-        let src = "MATCH ACYCLIC (a)-[*]->(b) RETURN a";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_mode, Some(PathMode::Acyclic));
-    }
-
-    #[test]
-    fn extract_path_search_all_shortest() {
-        let src = "MATCH ALL SHORTEST (a)-[*]->(b) RETURN a";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_search, Some(PathSearch::AllShortest));
-    }
-
-    #[test]
-    fn extract_path_search_any() {
-        let src = "MATCH ANY (a)-[*]->(b) RETURN a";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_search, Some(PathSearch::Any));
-    }
-
-    #[test]
-    fn extract_path_search_all() {
-        let src = "MATCH ALL (a)-[*]->(b) RETURN a";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_search, Some(PathSearch::All));
-    }
-
-    #[test]
-    fn no_path_mode_for_plain_match() {
-        let src = "MATCH (a)-[:KNOWS]->(b) RETURN a";
-        let meta = extract_gql_metadata(src);
-        assert_eq!(meta.path_mode, None);
-        assert_eq!(meta.path_search, None);
-    }
-
-    #[test]
-    fn mandatory_match_case_insensitive() {
-        let src = "mandatory match (n) RETURN n";
-        let meta = extract_gql_metadata(src);
-        assert!(meta.mandatory_match);
-    }
-
-    #[test]
-    fn normalise_path_mode_keywords_stripped() {
-        // Path mode keywords should be stripped from the source before cypher-core parsing
-        let src = "MATCH TRAIL (a)-[:KNOWS]->(b) RETURN a";
-        let out = normalise_gql_source(src);
-        assert!(
-            !contains_word(&out.to_ascii_uppercase(), "TRAIL"),
-            "TRAIL should be stripped from normalised source, got: {out}"
-        );
-    }
-
-    #[test]
-    fn normalise_path_search_keywords_stripped() {
-        let src = "MATCH ANY SHORTEST (a)-[:KNOWS]->(b) RETURN a";
-        let out = normalise_gql_source(src);
-        assert!(
-            !contains_word(&out.to_ascii_uppercase(), "SHORTEST"),
-            "ANY SHORTEST should be stripped, got: {out}"
-        );
+    fn match_modifier_ci_requires_trailing_word_boundary_on_match() {
+        assert!(!contains_match_modifier_ci("MATCHANY (p)", "ANY"));
+        assert!(!contains_match_modifier_ci("MATCHALL (p)", "ALL"));
+        assert!(!contains_match_modifier_ci("MATCHED ANY (p)", "ANY"));
     }
 }

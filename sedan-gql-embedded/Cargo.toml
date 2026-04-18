@@ -3,10 +3,13 @@ name    = "sedan-gql-embedded"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+readme  = "README.md"
 description = "Embeddable GQL/Cypher query engine backed by gql-engine"
 
 [dependencies]
-gql-engine = { path = "../gql-engine" }
-indexmap  = { workspace = true }
+gql-engine   = { path = "../gql-engine" }
+cypher-core  = { path = "../cypher-core" }
 
 [dev-dependencies]
+proptest              = { workspace = true }
+sedan-cypher-embedded = { path = "../sedan-cypher-embedded" }

@@ -14,9 +14,24 @@
 //! assert_eq!(result.rows.len(), 1);
 //! ```
 
+use std::collections::HashMap;
+
 pub use gql_engine::{
     GqlError, GraphStore, InMemoryGraphStore, MutationStats, QueryResult, Row, Value,
 };
+
+/// Re-export `ProcedureRegistry` so users of `execute_with_context` don't need
+/// a direct `cypher-core` dependency.
+pub use cypher_core::procedure::ProcedureRegistry;
+
+/// Convenience prelude — `use sedan_gql_embedded::prelude::*` imports the types
+/// needed for most use-cases.
+pub mod prelude {
+    pub use crate::{
+        GqlError, GraphStore, InMemoryGraphStore, MutationStats, ProcedureRegistry, QueryResult,
+        Row, SedanGql, Value,
+    };
+}
 
 /// A GQL/Cypher query engine that operates entirely in-process.
 pub struct SedanGql {
@@ -41,6 +56,44 @@ impl SedanGql {
     ) -> Result<QueryResult, GqlError> {
         gql_engine::execute(query, store, graph)
     }
+
+    /// Execute a query with parameters and a procedure registry.
+    ///
+    /// This is the parameterised variant — use it when you need `$param`
+    /// placeholders or custom stored procedures.
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use sedan_gql_embedded::prelude::*;
+    ///
+    /// let engine = SedanGql::new();
+    /// let store = InMemoryGraphStore::default();
+    /// store.create_graph("g").unwrap();
+    ///
+    /// let mut params = HashMap::new();
+    /// params.insert("name".into(), Value::Str("Alice".into()));
+    ///
+    /// let result = engine
+    ///     .execute_with_context(
+    ///         &store,
+    ///         "g",
+    ///         "INSERT (n:Person {name: $name}) RETURN n.name",
+    ///         &ProcedureRegistry::default(),
+    ///         params,
+    ///     )
+    ///     .unwrap();
+    /// assert_eq!(result.rows[0].get("n.name"), Some(&Value::Str("Alice".into())));
+    /// ```
+    pub fn execute_with_context(
+        &self,
+        store: &dyn GraphStore,
+        graph: &str,
+        query: &str,
+        registry: &ProcedureRegistry,
+        parameters: HashMap<String, Value>,
+    ) -> Result<QueryResult, GqlError> {
+        gql_engine::execute_with_context(query, store, graph, registry, parameters)
+    }
 }
 
 impl Default for SedanGql {
@@ -52,7 +105,6 @@ impl Default for SedanGql {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indexmap::IndexMap;
 
     fn test_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::default();
@@ -60,96 +112,32 @@ mod tests {
         store
     }
 
+    /// Smoke test: basic execute round-trip.
+    /// Full coverage is in tests/outside_in.rs, tests/parity.rs, etc.
     #[test]
-    fn return_literal() {
+    fn execute_smoke() {
         let engine = SedanGql::new();
         let store = test_store();
-        let result = engine
+        let qr = engine
             .execute(&store, "test", "RETURN 1 + 2 AS answer")
             .unwrap();
-        assert_eq!(result.columns, vec!["answer"]);
-        assert_eq!(result.rows.len(), 1);
-        assert_eq!(result.rows[0].get("answer"), Some(&Value::Int(3)));
+        assert_eq!(qr.rows[0].get("answer"), Some(&Value::Int(3)));
     }
 
+    /// Verifies the prelude re-exports all essential types (compile-time check).
     #[test]
-    fn create_and_match() {
+    fn prelude_reexports_all_essential_types() {
+        use crate::prelude::*;
+
         let engine = SedanGql::new();
-        let store = test_store();
+        let store = InMemoryGraphStore::default();
+        store.create_graph("p").expect("create graph");
 
-        // Create a node via Cypher
-        store
-            .create_node(
-                "test",
-                vec!["Person".into()],
-                IndexMap::from([("name".into(), Value::Str("Alice".into()))]),
-            )
-            .unwrap();
-
-        let result = engine
-            .execute(&store, "test", "MATCH (n:Person) RETURN n.name")
-            .unwrap();
-        assert_eq!(result.rows.len(), 1);
-        assert_eq!(
-            result.rows[0].get("n.name"),
-            Some(&Value::Str("Alice".into()))
-        );
-    }
-
-    #[test]
-    fn invalid_cypher_returns_error() {
-        let engine = SedanGql::new();
-        let store = test_store();
-        assert!(engine.execute(&store, "test", "NOT VALID !!!").is_err());
-    }
-
-    #[test]
-    fn create_via_cypher_and_match() {
-        let engine = SedanGql::new();
-        let store = test_store();
-
-        engine
-            .execute(
-                &store,
-                "test",
-                "CREATE (n:Movie {title: 'The Matrix'}) RETURN n.title",
-            )
-            .unwrap();
-
-        let result = engine
-            .execute(&store, "test", "MATCH (m:Movie) RETURN m.title")
-            .unwrap();
-        assert_eq!(result.rows.len(), 1);
-        assert_eq!(
-            result.rows[0].get("m.title"),
-            Some(&Value::Str("The Matrix".into()))
-        );
-    }
-
-    #[test]
-    fn gql_only_keywords_work_via_public_api() {
-        let engine = SedanGql::new();
-        let store = test_store();
-
-        let inserted = engine
-            .execute(
-                &store,
-                "test",
-                "INSERT (n:Movie {title: 'Arrival', year: 2016}) RETURN n.title",
-            )
-            .unwrap();
-        assert_eq!(
-            inserted.rows[0].get("n.title"),
-            Some(&Value::Str("Arrival".into()))
-        );
-
-        let filtered = engine
-            .execute(
-                &store,
-                "test",
-                "MATCH (n:Movie) FILTER n.year >= 2016 RETURN n.title",
-            )
-            .unwrap();
-        assert_eq!(filtered.rows.len(), 1);
+        let _registry = ProcedureRegistry::default();
+        let result: Result<QueryResult, GqlError> = engine.execute(&store, "p", "RETURN 1 AS x");
+        let qr = result.unwrap();
+        let _row: &Row = &qr.rows[0];
+        let _val: &Value = _row.get("x").unwrap();
+        let _stats: MutationStats = qr.stats;
     }
 }
