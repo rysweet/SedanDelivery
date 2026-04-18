@@ -28,11 +28,46 @@ jobs:
         run: bash scripts/validate-dockerfiles.sh
 
       - name: Build workflow Docker builder stages
+        # Each Dockerfile builds the full Rust workspace in an isolated builder
+        # stage. The four builds are sequential so a failure in any one of them
+        # short-circuits the rest. Output is captured per file so the job log
+        # stays scannable; the "Show Docker builder logs on failure" step below
+        # surfaces the failing log when this step exits non-zero.
         run: |
-          docker build -f Dockerfile . --target builder >/tmp/dockerfile-builder.log 2>&1
-          docker build -f Dockerfile.bolt . --target builder >/tmp/dockerfile-bolt-builder.log 2>&1
-          docker build -f Dockerfile.sync . --target builder >/tmp/dockerfile-sync-builder.log 2>&1
-          docker build -f Dockerfile.api . --target builder >/tmp/dockerfile-api-builder.log 2>&1
+          set -e
+          run_build() {
+            local file="$1" log="$2"
+            echo "::group::docker build -f $file . --target builder"
+            if docker build -f "$file" . --target builder > "$log" 2>&1; then
+              echo "OK ($file)"
+              echo "::endgroup::"
+            else
+              local rc=$?
+              echo "::endgroup::"
+              echo "::error file=$file::Docker builder stage for $file failed (exit $rc); see following log dump"
+              echo "----- BEGIN $log -----"
+              cat "$log"
+              echo "-----  END  $log -----"
+              return $rc
+            fi
+          }
+          run_build Dockerfile        /tmp/dockerfile-builder.log
+          run_build Dockerfile.bolt   /tmp/dockerfile-bolt-builder.log
+          run_build Dockerfile.sync   /tmp/dockerfile-sync-builder.log
+          run_build Dockerfile.api    /tmp/dockerfile-api-builder.log
+
+      - name: Upload Docker builder logs on failure
+        if: failure()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: dockerfile-builder-logs
+          path: |
+            /tmp/dockerfile-builder.log
+            /tmp/dockerfile-bolt-builder.log
+            /tmp/dockerfile-sync-builder.log
+            /tmp/dockerfile-api-builder.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       # Docker builder stages each compile the full Rust workspace inside
       # isolated containers. Combined with the host-side cargo checks that

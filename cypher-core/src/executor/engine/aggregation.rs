@@ -127,7 +127,7 @@ impl AggState {
         // Cap the set size to prevent OOM via hostile queries with millions
         // of distinct values — consistent with max_collect_size guard on Collect.
         if distinct {
-            let max_size = crate::config::global().max_collect_size as usize;
+            let max_size = crate::config::global().max_collect_size;
             if self.seen_distinct.len() >= max_size {
                 return; // silently drop excess — same as Collect overflow
             }

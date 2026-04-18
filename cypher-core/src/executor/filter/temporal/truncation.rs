@@ -269,7 +269,7 @@ pub(crate) fn eval_datetime_truncate(vals: &[Value]) -> Result<Value, GqlError> 
         final_time.hour(),
         final_time.minute(),
         final_time.second(),
-        final_time.subsec_nanosecond() as i32,
+        final_time.subsec_nanosecond(),
     )
     .map_err(|e| temporal_parse_error("datetime.truncate", e))?;
 
@@ -315,7 +315,7 @@ pub(crate) fn eval_localdatetime_truncate(vals: &[Value]) -> Result<Value, GqlEr
         final_time.hour(),
         final_time.minute(),
         final_time.second(),
-        final_time.subsec_nanosecond() as i32,
+        final_time.subsec_nanosecond(),
     )
     .map_err(|e| temporal_parse_error("localdatetime.truncate", e))?;
     Ok(Value::LocalDateTime(dt))
@@ -386,7 +386,7 @@ pub(crate) fn eval_time_truncate(vals: &[Value]) -> Result<Value, GqlError> {
         result.hour(),
         result.minute(),
         result.second(),
-        result.subsec_nanosecond() as i32,
+        result.subsec_nanosecond(),
     )
     .map_err(|e| temporal_parse_error("time.truncate", e))?;
     let zoned = epoch_dt

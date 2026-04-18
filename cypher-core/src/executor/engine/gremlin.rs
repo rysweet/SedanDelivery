@@ -807,17 +807,14 @@ impl<'a> QueryExecutor<'a> {
         let mut unproductive_idx: Option<usize> = None;
         for (idx, (match_val, _, _)) in options.iter().enumerate() {
             match match_val {
-                None => {
-                    if default_idx.is_none() {
-                        default_idx = Some(idx);
-                    }
+                None if default_idx.is_none() => {
+                    default_idx = Some(idx);
                 }
                 Some(Value::Str(s))
-                    if s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive" =>
+                    if (s.as_ref() == "Pick.unproductive" || s.as_ref() == "unproductive")
+                        && unproductive_idx.is_none() =>
                 {
-                    if unproductive_idx.is_none() {
-                        unproductive_idx = Some(idx);
-                    }
+                    unproductive_idx = Some(idx);
                 }
                 _ => {}
             }

@@ -105,14 +105,15 @@ impl ValidationContext {
         projected_names: &HashSet<String>,
     ) -> Result<(), GqlError> {
         match expr {
-            Expr::Variable(ref id) => {
-                if id.0 != "*" && !projected_names.contains(&id.0) && !self.vars.contains_key(&id.0)
-                {
-                    return Err(plan_error_semantic(&format!(
-                        "variable '{}' not in scope after RETURN/WITH DISTINCT",
-                        id.0
-                    )));
-                }
+            Expr::Variable(ref id)
+                if id.0 != "*"
+                    && !projected_names.contains(&id.0)
+                    && !self.vars.contains_key(&id.0) =>
+            {
+                return Err(plan_error_semantic(&format!(
+                    "variable '{}' not in scope after RETURN/WITH DISTINCT",
+                    id.0
+                )));
             }
             Expr::Property(inner, _) => {
                 // For property access like `a.age`, check if `a` itself is projected
@@ -265,19 +266,18 @@ impl ValidationContext {
         inside_aggregation: bool,
     ) -> Result<(), GqlError> {
         match expr {
-            Expr::Variable(ref id) => {
+            Expr::Variable(ref id)
                 // Variables inside aggregation calls are allowed (pre-agg data access)
                 if !inside_aggregation
                     && id.0 != "*"
                     && !with_names.contains(&id.0)
                     && !grouping_key_vars.contains(&id.0)
-                {
+                => {
                     return Err(plan_error_semantic(&format!(
                         "variable '{}' not in scope after WITH projection",
                         id.0
                     )));
                 }
-            }
             Expr::FunctionCall { name, args, .. } => {
                 let next_inside_agg = inside_aggregation || is_aggregation_function(name.as_str());
                 for arg in args {
@@ -447,13 +447,13 @@ impl ValidationContext {
         with_names: &HashSet<String>,
     ) -> Result<(), GqlError> {
         match expr {
-            Expr::Variable(ref id) => {
-                if !with_names.contains(&id.0) && !self.vars.contains_key(&id.0) {
-                    return Err(plan_error_semantic(&format!(
-                        "variable '{}' not defined",
-                        id.0
-                    )));
-                }
+            Expr::Variable(ref id)
+                if !with_names.contains(&id.0) && !self.vars.contains_key(&id.0) =>
+            {
+                return Err(plan_error_semantic(&format!(
+                    "variable '{}' not defined",
+                    id.0
+                )));
             }
             Expr::Property(inner, _) => {
                 self.check_expr_scope_in_with(inner, with_names)?;

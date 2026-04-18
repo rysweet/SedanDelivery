@@ -360,12 +360,10 @@ impl ValidationContext {
 
     fn validate_skip_limit(&self, expr: &Expr, clause_name: &str) -> Result<(), GqlError> {
         match expr {
-            Expr::Integer(n) => {
-                if *n < 0 {
-                    return Err(plan_error_semantic(&format!(
-                        "{clause_name} requires a non-negative integer, got {n}"
-                    )));
-                }
+            Expr::Integer(n) if *n < 0 => {
+                return Err(plan_error_semantic(&format!(
+                    "{clause_name} requires a non-negative integer, got {n}"
+                )));
             }
             Expr::Float(_) => {
                 return Err(plan_error_semantic(&format!(

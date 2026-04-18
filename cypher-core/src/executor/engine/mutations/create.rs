@@ -200,7 +200,7 @@ impl<'a> QueryExecutor<'a> {
 
                     let created_node_ids = self.store.batch_create_nodes(cx.graph, batch)?;
                     for (node_id, (alias, labels, non_null_prop_keys)) in
-                        created_node_ids.into_iter().zip(metadata.into_iter())
+                        created_node_ids.into_iter().zip(metadata)
                     {
                         cx.stats.nodes_created += 1;
                         cx.stats.nodes_created_ids.insert(node_id.0);
@@ -306,7 +306,7 @@ impl<'a> QueryExecutor<'a> {
 
                     let created_edge_ids = self.store.batch_create_edges(cx.graph, batch)?;
                     for (edge_id, (alias, non_null_edge_keys)) in
-                        created_edge_ids.into_iter().zip(metadata.into_iter())
+                        created_edge_ids.into_iter().zip(metadata)
                     {
                         cx.stats.edges_created += 1;
                         cx.stats.edges_created_ids.insert(edge_id.0);

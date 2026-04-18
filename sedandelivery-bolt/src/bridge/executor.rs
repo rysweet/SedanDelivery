@@ -272,15 +272,11 @@ fn collect_value_graph_ids(
     edge_ids: &mut Vec<EdgeId>,
 ) {
     match value {
-        Value::Node(node_id) => {
-            if seen_nodes.insert(*node_id) {
-                node_ids.push(*node_id);
-            }
+        Value::Node(node_id) if seen_nodes.insert(*node_id) => {
+            node_ids.push(*node_id);
         }
-        Value::Edge(edge_id) => {
-            if seen_edges.insert(*edge_id) {
-                edge_ids.push(*edge_id);
-            }
+        Value::Edge(edge_id) if seen_edges.insert(*edge_id) => {
+            edge_ids.push(*edge_id);
         }
         Value::Path { nodes, edges } => {
             for node_id in nodes {

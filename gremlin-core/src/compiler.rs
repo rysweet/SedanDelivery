@@ -5276,13 +5276,7 @@ impl GremlinCompiler {
                             let init_val = match val {
                                 GremlinValue::Integer(n) => *n as f64,
                                 GremlinValue::Float(f) => *f,
-                                GremlinValue::Bool(b) => {
-                                    if *b {
-                                        1.0
-                                    } else {
-                                        0.0
-                                    }
-                                }
+                                GremlinValue::Bool(b) if *b => 1.0,
                                 _ => 0.0,
                             };
                             self.reductions.insert(key.clone(), (op.clone(), init_val));
@@ -6628,10 +6622,10 @@ fn steps_need_path_tracking(steps: &[GremlinStep]) -> bool {
             | GremlinStep::FlatMap(inner)
             | GremlinStep::Map(inner)
             | GremlinStep::Not(inner)
-            | GremlinStep::Where(inner) => {
-                if steps_need_path_tracking(inner) {
-                    return true;
-                }
+            | GremlinStep::Where(inner)
+                if steps_need_path_tracking(inner) =>
+            {
+                return true;
             }
             GremlinStep::And(branches)
             | GremlinStep::Or(branches)
@@ -6642,10 +6636,11 @@ fn steps_need_path_tracking(steps: &[GremlinStep]) -> bool {
                     }
                 }
             }
-            GremlinStep::Choose(if_branch, else_branch, _) => {
-                if steps_need_path_tracking(if_branch) || steps_need_path_tracking(else_branch) {
-                    return true;
-                }
+            GremlinStep::Choose(if_branch, else_branch, _)
+                if (steps_need_path_tracking(if_branch)
+                    || steps_need_path_tracking(else_branch)) =>
+            {
+                return true;
             }
             _ => {}
         }
@@ -6662,10 +6657,10 @@ fn steps_need_label_stacks(steps: &[GremlinStep]) -> bool {
             | GremlinStep::FlatMap(inner)
             | GremlinStep::Map(inner)
             | GremlinStep::Not(inner)
-            | GremlinStep::Where(inner) => {
-                if steps_need_label_stacks(inner) {
-                    return true;
-                }
+            | GremlinStep::Where(inner)
+                if steps_need_label_stacks(inner) =>
+            {
+                return true;
             }
             GremlinStep::And(branches)
             | GremlinStep::Or(branches)
@@ -6676,10 +6671,10 @@ fn steps_need_label_stacks(steps: &[GremlinStep]) -> bool {
                     }
                 }
             }
-            GremlinStep::Choose(if_branch, else_branch, _) => {
-                if steps_need_label_stacks(if_branch) || steps_need_label_stacks(else_branch) {
-                    return true;
-                }
+            GremlinStep::Choose(if_branch, else_branch, _)
+                if (steps_need_label_stacks(if_branch) || steps_need_label_stacks(else_branch)) =>
+            {
+                return true;
             }
             _ => {}
         }

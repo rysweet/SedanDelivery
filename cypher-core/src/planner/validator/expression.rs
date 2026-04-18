@@ -170,10 +170,8 @@ pub(super) fn has_nested_aggregation(expr: &Expr, inside_agg: bool) -> bool {
 /// Collect all variable names referenced in an expression.
 pub(super) fn collect_variable_refs(expr: &Expr, vars: &mut HashSet<String>) {
     match expr {
-        Expr::Variable(ref id) => {
-            if id.0 != "*" {
-                vars.insert(id.0.clone());
-            }
+        Expr::Variable(ref id) if id.0 != "*" => {
+            vars.insert(id.0.clone());
         }
         Expr::Property(inner, _) => collect_variable_refs(inner, vars),
         Expr::BinaryOp { left, right, .. } => {
@@ -453,15 +451,14 @@ impl ValidationContext {
                 self.validate_expr_general(right)?;
 
                 match op {
-                    BinaryOp::And | BinaryOp::Or | BinaryOp::Xor => {
+                    BinaryOp::And | BinaryOp::Or | BinaryOp::Xor
                         // Boolean operators on non-boolean literals
-                        if is_non_boolean_literal(left) || is_non_boolean_literal(right) {
+                        if (is_non_boolean_literal(left) || is_non_boolean_literal(right)) => {
                             return Err(plan_error_semantic(&format!(
                                 "{} requires boolean arguments, got a non-boolean literal",
                                 super::op_name(*op)
                             )));
                         }
-                    }
                     BinaryOp::Add
                     | BinaryOp::Sub
                     | BinaryOp::Mul
@@ -473,17 +470,16 @@ impl ValidationContext {
                     BinaryOp::StartsWith
                     | BinaryOp::EndsWith
                     | BinaryOp::Contains
-                    | BinaryOp::RegexMatch => {
+                    | BinaryOp::RegexMatch
                         // String operations on non-string literals
-                        if is_non_string_non_null_literal(left)
-                            || is_non_string_non_null_literal(right)
-                        {
+                        if (is_non_string_non_null_literal(left)
+                            || is_non_string_non_null_literal(right))
+                        => {
                             return Err(plan_error_semantic(&format!(
                                 "{} requires string arguments",
                                 super::op_name(*op)
                             )));
                         }
-                    }
                     _ => {}
                 }
             }

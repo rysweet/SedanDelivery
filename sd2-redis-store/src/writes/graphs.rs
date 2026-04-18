@@ -183,7 +183,7 @@ impl RedisGraphStore {
                 }
                 let results: Vec<Vec<Option<String>>> =
                     pipe.query(conn).map_err(crate::backend_storage_error)?;
-                for (_id_str, fields) in valid_ids.into_iter().zip(results.into_iter()) {
+                for (_id_str, fields) in valid_ids.into_iter().zip(results) {
                     let Some(labels_json) = fields.first().and_then(|value| value.as_ref()) else {
                         continue;
                     };

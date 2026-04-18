@@ -933,17 +933,15 @@ impl<'src> Parser<'src> {
                     }
                     depth_bracket -= 1;
                 }
-                TokenKind::Pipe => {
-                    if depth_paren == 0 && depth_bracket == 0 {
+                TokenKind::Pipe
+                    if depth_paren == 0 && depth_bracket == 0 => {
                         return true; // found `|` at the right level
                     }
-                }
-                TokenKind::In => {
+                TokenKind::In
                     // If we find `IN` at the top level, it's a regular list comprehension
-                    if depth_paren == 0 && depth_bracket == 0 {
+                    if depth_paren == 0 && depth_bracket == 0 => {
                         return false;
                     }
-                }
                 TokenKind::Eof => return false,
                 _ => {}
             }
