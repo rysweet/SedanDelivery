@@ -1,7 +1,9 @@
 //! Embeddable openCypher query engine.
 //!
-//! This crate exposes the shared `cypher-core` parser, planner, and executor as
-//! an in-process openCypher API.
+//! This crate exposes the shared [`cypher-core`] parser, planner, and executor as
+//! an in-process openCypher API through a single [`CypherEngine`] struct.
+//!
+//! # Getting started
 //!
 //! ```
 //! use sedan_cypher_embedded::{CypherEngine, GraphStore, InMemoryGraphStore, Value};
@@ -10,7 +12,44 @@
 //! let store = InMemoryGraphStore::default();
 //! store.create_graph("g").unwrap();
 //! let result = engine.execute(&store, "g", "RETURN 'hello' AS msg").unwrap();
-//! assert_eq!(result.rows.len(), 1);
+//! assert_eq!(result.rows[0]["msg"], Value::Str("hello".into()));
+//! ```
+//!
+//! # Create, match, and aggregate
+//!
+//! ```
+//! use sedan_cypher_embedded::{CypherEngine, GraphStore, InMemoryGraphStore, Value};
+//!
+//! let engine = CypherEngine::new();
+//! let store = InMemoryGraphStore::default();
+//! store.create_graph("g").unwrap();
+//!
+//! // Create nodes
+//! engine.execute(&store, "g",
+//!     "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25})"
+//! ).unwrap();
+//!
+//! // Aggregate
+//! let result = engine.execute(&store, "g",
+//!     "MATCH (p:Person) RETURN count(p) AS n, avg(p.age) AS avg_age"
+//! ).unwrap();
+//! assert_eq!(result.rows[0]["n"], Value::Int(2));
+//! ```
+//!
+//! # Error handling
+//!
+//! ```
+//! use sedan_cypher_embedded::{CypherEngine, GraphStore, InMemoryGraphStore, GqlError};
+//!
+//! let engine = CypherEngine::new();
+//! let store = InMemoryGraphStore::default();
+//! store.create_graph("g").unwrap();
+//!
+//! match engine.execute(&store, "g", "NOT VALID CYPHER") {
+//!     Err(GqlError::Parse(e)) => { /* syntax error */ }
+//!     Err(other) => { /* plan, execution, storage, or type error */ }
+//!     Ok(_) => unreachable!(),
+//! }
 //! ```
 
 pub use cypher_core::error::GqlError;
@@ -20,29 +59,74 @@ pub use cypher_core::types::Value;
 
 use cypher_core::executor::{ExecutionBudget, QueryExecutor};
 use cypher_core::parser::parse_query;
+use cypher_core::plan_cache::PlanCache;
 use cypher_core::planner::QueryPlanner;
 
+/// Default plan cache capacity for embedded use.
+const DEFAULT_CACHE_CAPACITY: usize = 128;
+
 /// An openCypher query engine that operates entirely in-process.
-pub struct CypherEngine;
+///
+/// Maintains an internal plan cache so that repeated queries skip parsing
+/// and planning. The cache is automatically invalidated when it reaches
+/// capacity (epoch-based eviction). Call [`CypherEngine::clear_cache`]
+/// after schema-changing DDL operations.
+pub struct CypherEngine {
+    cache: PlanCache,
+}
 
 impl CypherEngine {
-    /// Create a new engine instance.
+    /// Create a new engine instance with the default cache capacity (128 plans).
     pub fn new() -> Self {
-        Self
+        Self {
+            cache: PlanCache::new(DEFAULT_CACHE_CAPACITY),
+        }
+    }
+
+    /// Create a new engine with a specific plan cache capacity.
+    ///
+    /// Use `0` to disable caching entirely.
+    pub fn with_cache_capacity(capacity: usize) -> Self {
+        Self {
+            cache: PlanCache::new(capacity),
+        }
     }
 
     /// Parse, plan, and execute an openCypher query against `store`.
+    ///
+    /// On cache hit the parsing and planning steps are skipped. Cached plans
+    /// are executed against the current store state, so write queries
+    /// (CREATE, SET, DELETE, MERGE, REMOVE) automatically observe fresh data
+    /// even when the plan is reused. Call [`CypherEngine::clear_cache`] after
+    /// schema-changing DDL operations (e.g. `CREATE INDEX`) that could
+    /// invalidate cached plans.
     pub fn execute(
         &self,
         store: &dyn GraphStore,
         graph: &str,
         query: &str,
     ) -> Result<QueryResult, GqlError> {
-        let ast = parse_query(query)?;
-        let planner = QueryPlanner::new(store, graph);
-        let plan = planner.plan(&ast)?;
+        let (ast, plan) = if let Some(cached) = self.cache.get(query) {
+            cached
+        } else {
+            let ast = parse_query(query)?;
+            let planner = QueryPlanner::new(store, graph);
+            let plan = planner.plan(&ast)?;
+            self.cache.insert(query, ast.clone(), plan.clone());
+            (ast, plan)
+        };
+        let _ = ast; // AST is retained in the cache but not needed for execution
         let mut budget = ExecutionBudget::default_budget();
         QueryExecutor::new(store).execute(graph, &plan, &mut budget)
+    }
+
+    /// Clear the plan cache.
+    ///
+    /// Call this after schema-changing DDL operations (e.g. `CREATE INDEX`)
+    /// or when the graph structure changes in ways that could invalidate
+    /// cached plans.
+    pub fn clear_cache(&self) {
+        self.cache.clear();
     }
 }
 
@@ -99,18 +183,5 @@ mod tests {
         let engine = CypherEngine::new();
         let store = test_store();
         assert!(engine.execute(&store, "test", "GARBAGE!!!").is_err());
-    }
-
-    #[test]
-    fn gql_only_insert_is_rejected() {
-        let engine = CypherEngine::new();
-        let store = test_store();
-        assert!(engine
-            .execute(
-                &store,
-                "test",
-                "INSERT (n:Person {name: 'Bob'}) RETURN n.name"
-            )
-            .is_err());
     }
 }

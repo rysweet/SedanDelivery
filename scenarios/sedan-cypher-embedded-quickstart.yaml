@@ -1,0 +1,31 @@
+scenario:
+  name: "sedan-cypher-embedded — quickstart example runs end-to-end"
+  description: |
+    Outside-in verification that a downstream consumer can build and run the
+    canonical quickstart example for sedan-cypher-embedded.
+
+  agents:
+    - name: shell
+      type: cli
+      config:
+        defaultTimeout: 600000
+
+  steps:
+    - name: "Build and run the cypher embedded quickstart"
+      agent: shell
+      action: execute_command
+      params:
+        command: "cargo"
+        args: ["run", "--quiet", "--example", "quickstart", "-p", "sedan-cypher-embedded"]
+      timeout: 600000
+
+    - name: "Verify quickstart printed expected aggregate result"
+      agent: shell
+      action: validate_output
+      params:
+        text: "QUICKSTART_OK count=2 avg_age=27.5"
+      timeout: 5000
+
+  metadata:
+    tags: [cli, embedded, cypher, quickstart, smoke]
+    priority: high

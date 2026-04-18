@@ -3725,6 +3725,7 @@ dependencies = [
 name = "sedan-cypher-embedded"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "cypher-core",
 ]
 

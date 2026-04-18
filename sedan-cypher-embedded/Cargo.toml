@@ -9,3 +9,8 @@ description = "Embeddable openCypher query engine backed by cypher-core"
 cypher-core = { path = "../cypher-core" }
 
 [dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name    = "engine"
+harness = false
