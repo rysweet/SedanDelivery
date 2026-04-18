@@ -528,23 +528,11 @@ fn extract_with_side_effects(
         let after = &search[prefix + "withSideEffect(".len()..];
         // Find the matching close paren
         let mut depth = 1u32;
-        let mut in_str = false;
+        let mut string_char: Option<char> = None;
         let mut escape = false;
         let mut end = 0;
         for (i, c) in after.char_indices() {
-            if escape {
-                escape = false;
-                continue;
-            }
-            if c == '\\' && in_str {
-                escape = true;
-                continue;
-            }
-            if c == '"' {
-                in_str = !in_str;
-                continue;
-            }
-            if in_str {
+            if update_string_state(c, &mut string_char, &mut escape) {
                 continue;
             }
             match c {
@@ -566,22 +554,10 @@ fn extract_with_side_effects(
         // Split into key and value (first comma at top level)
         let mut comma_depth = 0;
         let mut comma_pos = None;
-        let mut in_s = false;
+        let mut string_char2: Option<char> = None;
         let mut esc = false;
         for (i, c) in arg_str.char_indices() {
-            if esc {
-                esc = false;
-                continue;
-            }
-            if c == '\\' && in_s {
-                esc = true;
-                continue;
-            }
-            if c == '"' {
-                in_s = !in_s;
-                continue;
-            }
-            if in_s {
+            if update_string_state(c, &mut string_char2, &mut esc) {
                 continue;
             }
             match c {
@@ -604,22 +580,10 @@ fn extract_with_side_effects(
             // Split rest_str at the last top-level comma to separate value from operator
             let mut last_comma = None;
             let mut ld = 0i32;
-            let mut in_s2 = false;
+            let mut string_char3: Option<char> = None;
             let mut esc2 = false;
             for (i2, c) in rest_str.char_indices() {
-                if esc2 {
-                    esc2 = false;
-                    continue;
-                }
-                if c == '\\' && in_s2 {
-                    esc2 = true;
-                    continue;
-                }
-                if c == '"' {
-                    in_s2 = !in_s2;
-                    continue;
-                }
-                if in_s2 {
+                if update_string_state(c, &mut string_char3, &mut esc2) {
                     continue;
                 }
                 match c {
@@ -696,26 +660,46 @@ fn parse_side_effect_value(
     parse_literal_value(s, resolve_param)
 }
 
+/// Update quote-tracking state for a tokenizer scan. Returns `true` if the
+/// current character is part of a string literal (either the opening/closing
+/// quote, an escape, or a character inside the string) and therefore should
+/// be treated as opaque by delimiter-aware tokenizers.
+///
+/// Supports both single- and double-quoted string literals with backslash
+/// escapes. The character at position `ch` is handled symmetrically for both
+/// quote styles: a `'` inside a `"…"` string (and vice versa) does not toggle
+/// state, matching the behaviour of Groovy/Gremlin text traversals.
+#[inline]
+fn update_string_state(ch: char, string_char: &mut Option<char>, escape: &mut bool) -> bool {
+    if *escape {
+        *escape = false;
+        return true;
+    }
+    if let Some(q) = *string_char {
+        if ch == '\\' {
+            *escape = true;
+            return true;
+        }
+        if ch == q {
+            *string_char = None;
+        }
+        return true;
+    }
+    if ch == '"' || ch == '\'' {
+        *string_char = Some(ch);
+        return true;
+    }
+    false
+}
+
 /// Skip past balanced parentheses.  Input starts just after the opening `(`.
 /// Returns the slice after the matching `)` and any trailing `.`.
 fn skip_balanced_parens(input: &str) -> &str {
     let mut depth = 1u32;
-    let mut in_string = false;
+    let mut string_char: Option<char> = None;
     let mut escape = false;
     for (i, ch) in input.char_indices() {
-        if escape {
-            escape = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            escape = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string {
+        if update_string_state(ch, &mut string_char, &mut escape) {
             continue;
         }
         if ch == '(' {
@@ -738,26 +722,11 @@ fn tokenize_steps(input: &str) -> Result<Vec<String>, TextParseError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut depth = 0u32;
-    let mut in_string = false;
+    let mut string_char: Option<char> = None;
     let mut escape = false;
 
     for ch in input.chars() {
-        if escape {
-            current.push(ch);
-            escape = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            current.push(ch);
-            escape = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-            current.push(ch);
-            continue;
-        }
-        if in_string {
+        if update_string_state(ch, &mut string_char, &mut escape) {
             current.push(ch);
             continue;
         }
@@ -2697,24 +2666,12 @@ fn split_top_level_args(s: &str) -> Vec<&str> {
 
     let mut result = Vec::new();
     let mut depth = 0u32;
-    let mut in_string = false;
+    let mut string_char: Option<char> = None;
     let mut escape = false;
     let mut start = 0;
 
     for (i, ch) in s.char_indices() {
-        if escape {
-            escape = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            escape = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string {
+        if update_string_state(ch, &mut string_char, &mut escape) {
             continue;
         }
         match ch {
@@ -3272,6 +3229,153 @@ mod tests {
             last_steps[4],
             GremlinStep::Select(Some(crate::bytecode::Pop::Last), vec!["v".into()])
         );
+    }
+
+    // ── Quote-aware tokenization tests ──────────────────────────────────
+
+    #[test]
+    fn tokenize_steps_preserves_comma_inside_double_quoted_string() {
+        // A literal comma inside the quoted string must not split the step,
+        // nor be treated as an argument separator by downstream parsers.
+        let steps =
+            parse_traversal(r#"g.V().has("name","marko, the creator")"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "name".into(),
+                Some(GremlinValue::String("marko, the creator".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn tokenize_steps_preserves_comma_inside_single_quoted_string() {
+        let steps =
+            parse_traversal(r#"g.V().has('name','marko, the creator')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "name".into(),
+                Some(GremlinValue::String("marko, the creator".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn tokenize_steps_preserves_parens_inside_quoted_string() {
+        // Parentheses inside the string must not affect paren-depth tracking.
+        let steps =
+            parse_traversal(r#"g.V().has("note","hello (world)")"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "note".into(),
+                Some(GremlinValue::String("hello (world)".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn tokenize_steps_preserves_parens_inside_single_quoted_string() {
+        let steps =
+            parse_traversal(r#"g.V().has('note','hello (world)')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "note".into(),
+                Some(GremlinValue::String("hello (world)".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn tokenize_steps_preserves_dots_and_spaces_inside_quoted_string() {
+        // A `.` inside a quoted string must not split step tokens, and leading
+        // whitespace inside the string must be preserved verbatim.
+        let steps =
+            parse_traversal(r#"g.V().has("desc","v.first  v.second")"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "desc".into(),
+                Some(GremlinValue::String("v.first  v.second".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn tokenize_steps_preserves_escaped_double_quote() {
+        // \" inside a double-quoted string must not end the string.
+        let steps =
+            parse_traversal(r#"g.V().has("q","say \"hi\", ok")"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        match &steps[1] {
+            GremlinStep::Has(k, Some(GremlinValue::String(v))) => {
+                assert_eq!(k, "q");
+                // The escape backslash is preserved in the token; value passes
+                // through parse_literal_value which strips outer quotes only.
+                assert!(
+                    v.contains("say") && v.contains("hi") && v.contains(", ok"),
+                    "unexpected value: {v}"
+                );
+            }
+            other => panic!("expected Has step, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tokenize_steps_single_quote_inside_double_quoted_string() {
+        // A stray single quote inside "..." must NOT toggle string state.
+        let steps =
+            parse_traversal(r#"g.V().has("msg","it's fine, really")"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "msg".into(),
+                Some(GremlinValue::String("it's fine, really".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn tokenize_steps_double_quote_inside_single_quoted_string() {
+        // A stray double quote inside '...' must NOT toggle string state.
+        let steps =
+            parse_traversal(r#"g.V().has('msg','he said "yes", go')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "msg".into(),
+                Some(GremlinValue::String(r#"he said "yes", go"#.into()))
+            )
+        );
+    }
+
+    #[test]
+    fn split_top_level_args_respects_single_quoted_strings() {
+        // Direct unit test of the shared splitter helper.
+        let args = split_top_level_args(r#"'a, b','c (d)','e'"#);
+        assert_eq!(args, vec!["'a, b'", "'c (d)'", "'e'"]);
+    }
+
+    #[test]
+    fn split_top_level_args_respects_mixed_quotes_and_escapes() {
+        let args = split_top_level_args(r#""a, b",'c, d',"e\"f, g""#);
+        assert_eq!(args, vec![r#""a, b""#, r#"'c, d'"#, r#""e\"f, g""#]);
+    }
+
+    #[test]
+    fn skip_balanced_parens_respects_single_quoted_string() {
+        // Parens inside '...' must not affect depth tracking.
+        let rest = skip_balanced_parens(r#"'hi (there)').next()"#);
+        assert_eq!(rest, ".next()");
     }
 }
 
