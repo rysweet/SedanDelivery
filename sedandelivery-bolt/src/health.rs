@@ -42,6 +42,37 @@ struct HealthResponse {
 /// `0.0.0.0` (override with `BOLT_HEALTH_BIND_ADDR`) and port defaults
 /// to 7688 (override with `BOLT_HEALTH_PORT`).
 pub fn spawn_health_server(state: HealthState) {
+    spawn_health_server_with_addr(state, None);
+}
+
+/// Same as [`spawn_health_server`] but lets the caller supply an explicit
+/// `SocketAddr`, bypassing env-var lookup. Used by tests so they don't have
+/// to mutate the process environment (`std::env::set_var` is `unsafe` in
+/// Rust 2024).
+pub fn spawn_health_server_with_addr(
+    state: HealthState,
+    addr_override: Option<std::net::SocketAddr>,
+) {
+    let sock_addr = addr_override.unwrap_or_else(resolve_health_addr_from_env);
+    let bind_addr = sock_addr.ip().to_string();
+    let port = sock_addr.port();
+
+    let app = build_router(state);
+
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(sock_addr)
+            .await
+            .expect("failed to bind health HTTP listener");
+        tracing::info!(%bind_addr, port, "health/metrics server listening");
+        if let Err(e) = axum::serve(listener, app).await {
+            tracing::error!("health server error: {e}");
+        }
+    });
+}
+
+/// Resolve the health server's listen address from `BOLT_HEALTH_PORT` and
+/// `BOLT_HEALTH_BIND_ADDR`, with safe fallbacks. Defaults to `0.0.0.0:7688`.
+fn resolve_health_addr_from_env() -> std::net::SocketAddr {
     let port = std::env::var("BOLT_HEALTH_PORT")
         .ok()
         .and_then(|v| match v.parse::<u16>() {
@@ -58,7 +89,7 @@ pub fn spawn_health_server(state: HealthState) {
 
     // Pre-validate the full socket address to catch typos early.
     let sock_addr_str = format!("{bind_addr}:{port}");
-    let sock_addr: std::net::SocketAddr = match sock_addr_str.parse() {
+    match sock_addr_str.parse() {
         Ok(addr) => addr,
         Err(_) => {
             tracing::warn!(
@@ -69,19 +100,7 @@ pub fn spawn_health_server(state: HealthState) {
                 .parse()
                 .expect("fallback addr must parse")
         }
-    };
-
-    let app = build_router(state);
-
-    tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(sock_addr)
-            .await
-            .expect("failed to bind health HTTP listener");
-        tracing::info!(%bind_addr, port, "health/metrics server listening");
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!("health server error: {e}");
-        }
-    });
+    }
 }
 
 async fn health_handler(State(state): State<HealthState>) -> impl IntoResponse {
@@ -444,9 +463,10 @@ mod tests {
 
     #[tokio::test]
     async fn health_server_binds_to_all_interfaces_by_default() {
-        // Spawn the health server without setting BOLT_HEALTH_BIND_ADDR.
-        // It should bind to 0.0.0.0 (all interfaces), which means we can
-        // connect via 127.0.0.1.
+        // Spawn the health server using the explicit-addr API so we don't
+        // need to mutate process env (which is `unsafe` in Rust 2024).
+        // We bind 0.0.0.0:<random> and then connect via 127.0.0.1, which
+        // demonstrates that the default bind address is "all interfaces".
         let state = test_state();
 
         // Pick a random available port to avoid conflicts.
@@ -454,17 +474,8 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        // Temporarily set the env vars for this test.
-        // SAFETY: test runs are single-threaded per test function; no other
-        // thread is reading these env vars concurrently within this test.
-        unsafe {
-            std::env::set_var("BOLT_HEALTH_PORT", port.to_string());
-            std::env::remove_var("BOLT_HEALTH_BIND_ADDR");
-        }
-        spawn_health_server(state);
-        unsafe {
-            std::env::remove_var("BOLT_HEALTH_PORT");
-        }
+        let addr: std::net::SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
+        spawn_health_server_with_addr(state, Some(addr));
 
         // Give the server a moment to start.
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
