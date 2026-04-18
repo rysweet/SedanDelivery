@@ -63,18 +63,18 @@ impl<'a> QueryExecutor<'a> {
                         {
                             match elem {
                                 Value::Node(nid) => {
-                                    let _ = self.store.remove_node_property(
+                                    self.store.remove_node_property(
                                         cx.graph,
                                         *nid,
                                         key.as_ref(),
-                                    );
+                                    )?;
                                 }
                                 Value::Edge(eid) => {
-                                    let _ = self.store.remove_edge_property(
+                                    self.store.remove_edge_property(
                                         cx.graph,
                                         *eid,
                                         key.as_ref(),
-                                    );
+                                    )?;
                                 }
                                 _ => {}
                             }
