@@ -288,3 +288,65 @@ fn cluster_mode_drop_index_and_delete_graph_are_cluster_safe() {
         .graph_exists(&graph)
         .expect("graph_exists should succeed"));
 }
+
+/// Regression test for the cluster pipeline bug fixed in #1276.
+///
+/// `find_nodes_by_label_and_property` has two code paths:
+///   1. Fast path: a property index exists → SMEMBERS on the index key
+///   2. Fallback: no index → SMEMBERS the label set, then pipelined HGETs
+///      to filter by the property value.
+///
+/// The fallback path was previously broken in cluster mode because it used
+/// raw `redis::pipe()` instead of `conn.pipeline()`. The cluster connection
+/// would silently return empty results, masked by `unwrap_or_else(|_| vec![None; ...])`.
+///
+/// This test deliberately does NOT call `create_index`, so it exercises the
+/// fallback path. Before #1276 it would return an empty vector even though
+/// a matching node exists.
+#[test]
+#[ignore = "requires GQL_REDIS_CLUSTER_NODES; run with `cargo test -p sd2-redis-store --test cluster_pipeline -- --ignored --nocapture`"]
+fn cluster_mode_label_property_scan_without_index_finds_match() {
+    let store = cluster_store();
+    let graph = unique_graph("cluster-noindex");
+    store.create_graph(&graph).expect("graph should be created");
+
+    let alice = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Alice".into()))]),
+        )
+        .expect("create_node should succeed");
+    let _bob = store
+        .create_node(
+            &graph,
+            vec!["Person".to_string()],
+            props(&[("name", Value::Str("Bob".into()))]),
+        )
+        .expect("create_node should succeed");
+
+    // Confirm there is no index on (Person, name) so we hit the fallback path.
+    let target = Value::Str("Alice".into());
+    let matches = store
+        .find_nodes_by_label_and_property(&graph, "Person", "name", RangeQuery::Eq(&target))
+        .expect("no-index lookup should succeed in cluster mode");
+    assert_eq!(
+        matches,
+        vec![alice],
+        "expected to find Alice via label+property scan with no index; \
+         empty result here means the cluster pipeline regression has returned"
+    );
+
+    // Empty-label-set case (no matching label) must also succeed cleanly.
+    let unknown = Value::Str("Nobody".into());
+    let no_matches = store
+        .find_nodes_by_label_and_property(&graph, "Person", "name", RangeQuery::Eq(&unknown))
+        .expect("no-match lookup should succeed");
+    assert!(
+        no_matches.is_empty(),
+        "no Nobody should match, got {no_matches:?}"
+    );
+
+    // Cleanup
+    store.delete_graph(&graph).expect("delete_graph");
+}

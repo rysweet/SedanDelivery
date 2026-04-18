@@ -431,9 +431,17 @@ impl RedisGraphStore {
                 .arg(self.kp(key_node(graph, nid)))
                 .arg("props");
         }
-        let props_results: Vec<Option<String>> = pipe
-            .query(&mut conn)
-            .unwrap_or_else(|_| vec![None; node_ids.len()]);
+        // Propagate pipeline errors instead of silently coercing to empty
+        // results. The previous `unwrap_or_else(|_| vec![None; ...])` was
+        // what allowed the cluster pipeline mismatch (#1276) to silently
+        // return zero matches across the entire fleet for ~5 months.
+        let props_results: Vec<Option<String>> = if node_ids.is_empty() {
+            Vec::new()
+        } else {
+            pipe.query(&mut conn).map_err(|e| StorageError::Backend {
+                msg: format!("pipelined HGET for label+property scan failed: {e}"),
+            })?
+        };
 
         let mut matched = Vec::new();
         for (&node_id, props_json) in node_ids.iter().zip(props_results.iter()) {
