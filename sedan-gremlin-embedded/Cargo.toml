@@ -11,4 +11,9 @@ gremlin-core = { path = "../gremlin-core" }
 thiserror    = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 indexmap = { workspace = true }
+
+[[bench]]
+name = "engine"
+harness = false

@@ -1517,6 +1517,7 @@ dependencies = [
 name = "gremlin-core"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "cypher-core",
  "indexmap",
  "serde",
@@ -3744,6 +3745,7 @@ dependencies = [
 name = "sedan-gremlin-embedded"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "cypher-core",
  "gremlin-core",
  "indexmap",

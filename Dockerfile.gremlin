@@ -30,7 +30,7 @@ COPY tests/loadtest/Cargo.toml ./tests/loadtest/
 
 # Create stub source files so cargo can resolve the dependency graph.
 RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-module/src gql-cli/src sd2-api/src \
-             sedandelivery-bolt/src sedandelivery-bolt/benches gql-engine/benches sedandelivery-gremlin/src sedandelivery-gremlin-server/src sedan-cypher-embedded/benches \
+             sedandelivery-bolt/src sedandelivery-bolt/benches gremlin-core/benches sedan-gremlin-embedded/benches sedandelivery-gremlin/src sedandelivery-gremlin-server/src sedan-cypher-embedded/benches gql-engine/benches \
              sedandelivery-fabric-sync/src tests/loadtest/src && \
     echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
     echo "pub fn stub() {}" > sd2-redis-store/src/lib.rs && \
@@ -41,6 +41,8 @@ RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-
     echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
     echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
     echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
+    echo "fn main() {}" > gremlin-core/benches/parse_compile.rs && \
+    echo "fn main() {}" > sedan-gremlin-embedded/benches/engine.rs && \
     echo "fn main() {}" > gql-engine/benches/gql_parse.rs && \
     echo "fn main() {}" > sedan-cypher-embedded/benches/engine.rs && \
     echo "fn main() {}" > sedandelivery-gremlin/src/main.rs && \

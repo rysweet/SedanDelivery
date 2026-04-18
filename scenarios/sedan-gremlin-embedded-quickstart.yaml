@@ -1,0 +1,31 @@
+scenario:
+  name: "sedan-gremlin-embedded — quickstart example runs end-to-end"
+  description: |
+    Outside-in verification that a downstream consumer can build and run the
+    canonical quickstart example for sedan-gremlin-embedded.
+
+  agents:
+    - name: shell
+      type: cli
+      config:
+        defaultTimeout: 600000
+
+  steps:
+    - name: "Build and run the gremlin embedded quickstart"
+      agent: shell
+      action: execute_command
+      params:
+        command: "cargo"
+        args: ["run", "--quiet", "--example", "quickstart", "-p", "sedan-gremlin-embedded"]
+      timeout: 600000
+
+    - name: "Verify quickstart printed expected count line"
+      agent: shell
+      action: validate_output
+      params:
+        text: "QUICKSTART_OK count=2"
+      timeout: 5000
+
+  metadata:
+    tags: [cli, embedded, gremlin, quickstart, smoke]
+    priority: high

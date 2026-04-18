@@ -3917,7 +3917,7 @@ impl GremlinCompiler {
                         },
                         remap,
                         times_before: times_before_val,
-                        loop_label: label.clone(),
+                        loop_label: label.as_deref().map(Box::from),
                         body_path_aliases: body_pa,
                         pop_origins,
                         needs_path: self.needs_path_tracking,

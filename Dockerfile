@@ -37,7 +37,7 @@ COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 # in Cargo.toml must have at least a stub source or cargo cannot load the
 # workspace (which caused exit code 101 in #1000).
 RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-module/src gql-cli/src sd2-api/src \
-             sedandelivery-bolt/src sedandelivery-bolt/benches gql-engine/benches sedandelivery-fabric-sync/src sedan-cypher-embedded/benches \
+             sedandelivery-bolt/src sedandelivery-bolt/benches gremlin-core/benches sedan-gremlin-embedded/benches sedandelivery-fabric-sync/src sedan-cypher-embedded/benches gql-engine/benches \
              sedandelivery-gremlin/src sedandelivery-gremlin-server/src gremlin-core/src gql-engine/src sedan-gql-embedded/src \
              sedan-cypher-embedded/src sedan-gremlin-embedded/src \
              tests/loadtest/src tests/gremlin-tck/src && \
@@ -50,6 +50,8 @@ RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-
     echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
     echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
     echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
+    echo "fn main() {}" > gremlin-core/benches/parse_compile.rs && \
+    echo "fn main() {}" > sedan-gremlin-embedded/benches/engine.rs && \
     echo "fn main() {}" > gql-engine/benches/gql_parse.rs && \
     echo "fn main() {}" > sedan-cypher-embedded/benches/engine.rs && \
     echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
