@@ -1,0 +1,23 @@
+name: Public API Gate
+
+on:
+  pull_request:
+    paths:
+      - 'sedan-cypher-embedded/src/**'
+      - 'sedan-gql-embedded/src/**'
+      - 'sedan-gremlin-embedded/src/**'
+      - 'docs/public-api/**'
+      - 'scripts/check-public-api.sh'
+      - '.github/workflows/public-api-gate.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check embedded crate public API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+      - name: Verify public API snapshots
+        run: bash scripts/check-public-api.sh

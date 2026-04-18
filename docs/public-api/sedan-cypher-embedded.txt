@@ -1,0 +1,9 @@
+pub fn clear_cache(&self) {
+pub fn execute(
+pub fn new() -> Self {
+pub fn with_cache_capacity(capacity: usize) -> Self {
+pub struct CypherEngine {
+pub use cypher_core::error::GqlError;
+pub use cypher_core::executor::{MutationStats, QueryResult, Row};
+pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+pub use cypher_core::types::Value;
