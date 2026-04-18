@@ -126,6 +126,12 @@ jobs:
       - name: Run embedded engine contract tests
         run: cargo test -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded
 
+      - name: Run embedded engine doctests
+        # Documentation examples are the primary onboarding surface for
+        # downstream consumers — every // ``` rust example must stay
+        # compilable and correct.
+        run: cargo test --doc -p sedan-cypher-embedded -p sedan-gql-embedded -p sedan-gremlin-embedded
+
       - name: Run GQL outside-in contract tests
         run: cargo test -p gql-engine --test outside_in
 
