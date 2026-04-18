@@ -11,5 +11,10 @@ gql-engine   = { path = "../gql-engine" }
 cypher-core  = { path = "../cypher-core" }
 
 [dev-dependencies]
+criterion             = { workspace = true }
 proptest              = { workspace = true }
 sedan-cypher-embedded = { path = "../sedan-cypher-embedded" }
+
+[[bench]]
+name    = "engine"
+harness = false

@@ -3739,6 +3739,7 @@ dependencies = [
 name = "sedan-gql-embedded"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "cypher-core",
  "gql-engine",
  "proptest",
