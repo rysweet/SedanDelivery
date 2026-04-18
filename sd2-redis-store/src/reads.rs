@@ -417,12 +417,22 @@ impl RedisGraphStore {
             .collect();
 
         // Pipeline HGET calls for the target property on all label members.
-        let mut pipe = redis::pipe();
+        // Use `conn.pipeline()` (not `redis::pipe()`) so that cluster
+        // connections receive a `cluster_pipe()` capable of handling MOVED/ASK
+        // redirects. All keys here share the `{graph}` hash tag and route to
+        // the same shard, but the cluster pipeline wrapper is still required;
+        // a standalone `redis::pipe()` against a `ClusterConnection` silently
+        // returns no results, which manifested as missing label+property
+        // matches in cluster mode (see #1090 follow-up: empty UNWIND-driven
+        // MATCH results, missing edge-source/target nodes).
+        let mut pipe = conn.pipeline();
         for &nid in &node_ids {
-            pipe.hget(self.kp(key_node(graph, nid)), "props");
+            pipe.cmd("HGET")
+                .arg(self.kp(key_node(graph, nid)))
+                .arg("props");
         }
         let props_results: Vec<Option<String>> = pipe
-            .query(conn.as_mut())
+            .query(&mut conn)
             .unwrap_or_else(|_| vec![None; node_ids.len()]);
 
         let mut matched = Vec::new();
