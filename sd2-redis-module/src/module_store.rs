@@ -73,10 +73,14 @@ impl ModuleRedisStore {
             let ctx_ptr = ptr.ok_or(StorageError::Backend {
                 msg: "ModuleRedisStore: no module context set".into(),
             })?;
-            // SAFETY: the context pointer is valid for the duration of the
-            // command handler, and we only use it within that scope. Valkey
-            // dispatches module commands on a single thread, so there is no
-            // concurrent access.
+            // SAFETY: `ctx_ptr` is a `*const Context` previously stored by
+            // `set_context()` at the start of a command callback. Valkey
+            // module commands are dispatched on a single thread, so there is
+            // no concurrent access. The pointer remains valid for the full
+            // duration of the callback; misuse (forgetting to call
+            // `clear_context()` at the end of the callback before the
+            // `Context` borrow ends) would be use-after-free, which is why
+            // this pair must always be invoked symmetrically.
             let ctx = unsafe { &*ctx_ptr };
             f(ctx)
         })
@@ -1287,12 +1291,10 @@ fn partial_cmp_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
     }
 }
 
-// Implement Send + Sync: ModuleRedisStore holds no data that crosses threads.
-// The thread-local context is per-thread by definition. The key_prefix is just
-// a String. The struct itself is stored in a global OnceLock but only accessed
-// from the module's command handler thread.
-unsafe impl Send for ModuleRedisStore {}
-unsafe impl Sync for ModuleRedisStore {}
+// ModuleRedisStore contains only owned, thread-safe data (a String for the
+// key prefix); the auto-derived Send + Sync are sufficient. The Valkey
+// `Context` is not stored on the struct — it lives in a per-thread
+// `MODULE_CTX` and is only valid for the duration of a command callback.
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
