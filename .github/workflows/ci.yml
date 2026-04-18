@@ -303,6 +303,17 @@ jobs:
       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf'))
     env:
       PERF_REGRESSION_THRESHOLD: ${{ vars.PERF_REGRESSION_THRESHOLD || '10' }}
+      GQL_REDIS_URL: redis://127.0.0.1:6379
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
 
@@ -334,12 +345,21 @@ jobs:
       - name: Run scale benchmarks
         run: cargo bench -p cypher-core --bench scale -- --output-format bencher | tee bench-scale.txt
 
+      - name: Run property_index benchmarks
+        run: cargo bench -p cypher-core --bench property_index -- --output-format bencher | tee bench-property-index.txt
+
       - name: Run bolt benchmarks
         run: cargo bench -p sedandelivery-bolt --bench bolt_benchmarks -- --output-format bencher | tee bench-bolt.txt
 
+      - name: Run redis batch_write benchmarks
+        run: cargo bench -p sd2-redis-store --bench batch_write -- --output-format bencher | tee bench-batch-write.txt
+
+      - name: Run redis store_safety benchmarks
+        run: cargo bench -p sd2-redis-store --bench store_safety -- --output-format bencher | tee bench-store-safety.txt
+
       # Combine all results into a single file for comparison
       - name: Combine benchmark results
-        run: cat bench-parser.txt bench-executor.txt bench-scale.txt bench-bolt.txt > new.txt
+        run: cat bench-parser.txt bench-executor.txt bench-scale.txt bench-property-index.txt bench-bolt.txt bench-batch-write.txt bench-store-safety.txt > new.txt
 
       # ── Regression detection ────────────────────────────────────────────
       - name: Download baseline artifact
