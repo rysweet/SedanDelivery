@@ -32,39 +32,15 @@ COPY sedan-gremlin-embedded/Cargo.toml ./sedan-gremlin-embedded/
 COPY tests/loadtest/Cargo.toml        ./tests/loadtest/
 COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 
-# Create stub source files so cargo can resolve the full workspace dependency
-# graph during the dependency pre-caching layer. All workspace members listed
-# in Cargo.toml must have at least a stub source or cargo cannot load the
-# workspace (which caused exit code 101 in #1000).
-RUN mkdir -p cypher-core/src sd2-redis-store/src gql-fabric-store/src sd2-redis-module/src gql-cli/src sd2-api/src \
-             sedandelivery-bolt/src sedandelivery-bolt/benches gremlin-core/benches sedan-gremlin-embedded/benches sedandelivery-fabric-sync/src sedan-cypher-embedded/benches gql-engine/benches \
-             sedandelivery-gremlin/src sedandelivery-gremlin-server/src gremlin-core/src gql-engine/src sedan-gql-embedded/src \
-             sedan-cypher-embedded/src sedan-gremlin-embedded/src \
-             tests/loadtest/src tests/gremlin-tck/src && \
-    echo "pub fn stub() {}" > cypher-core/src/lib.rs && \
-    echo "pub fn stub() {}" > sd2-redis-store/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-fabric-store/src/lib.rs && \
-    echo "pub fn stub() {}" > sd2-redis-module/src/lib.rs && \
-    echo "fn main() {}" > gql-cli/src/main.rs && \
-    echo "fn main() {}" > sd2-api/src/main.rs && \
-    echo "pub fn stub() {}" > sedandelivery-bolt/src/lib.rs && \
-    echo "fn main() {}" > sedandelivery-bolt/src/main.rs && \
-    echo "fn main() {}" > sedandelivery-bolt/benches/bolt_benchmarks.rs && \
-    echo "fn main() {}" > gremlin-core/benches/parse_compile.rs && \
-    echo "fn main() {}" > sedan-gremlin-embedded/benches/engine.rs && \
-    echo "fn main() {}" > gql-engine/benches/gql_parse.rs && \
-    echo "fn main() {}" > sedan-cypher-embedded/benches/engine.rs && \
-    echo "fn main() {}" > sedandelivery-fabric-sync/src/main.rs && \
-    echo "pub fn stub() {}" > sedandelivery-gremlin/src/lib.rs && \
-    echo "fn main() {}" > sedandelivery-gremlin/src/main.rs && \
-    echo "fn main() {}" > sedandelivery-gremlin-server/src/main.rs && \
-    echo "pub fn stub() {}" > gremlin-core/src/lib.rs && \
-    echo "pub fn stub() {}" > gql-engine/src/lib.rs && \
-    echo "pub fn stub() {}" > sedan-gql-embedded/src/lib.rs && \
-    echo "pub fn stub() {}" > sedan-cypher-embedded/src/lib.rs && \
-    echo "pub fn stub() {}" > sedan-gremlin-embedded/src/lib.rs && \
-    echo "fn main() {}" > tests/loadtest/src/main.rs && \
-    echo "pub fn stub() {}" > tests/gremlin-tck/src/lib.rs && \
+# Copy the workspace stub generator and all member Cargo.toml files have already
+# been COPYed above. Generate stub source files for every workspace member +
+# every [[bench]] target so cargo can resolve the full workspace during the
+# dependency pre-caching layer. This replaces a manual mkdir/echo wall that
+# had to be edited for every new member or bench (and produced merge conflicts
+# on every parallel feature branch — see #1272/#1273/#1274 history).
+COPY scripts/generate-cargo-stubs.sh ./scripts/
+RUN chmod +x scripts/generate-cargo-stubs.sh && \
+    scripts/generate-cargo-stubs.sh && \
     cargo build --release -p sd2-redis-module || true
 
 # Copy actual source code
