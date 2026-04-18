@@ -52,6 +52,8 @@
 //! }
 //! ```
 
+#![warn(missing_docs)]
+
 pub use cypher_core::error::GqlError;
 pub use cypher_core::executor::{MutationStats, QueryResult, Row};
 pub use cypher_core::procedure::ProcedureRegistry;

@@ -45,6 +45,8 @@
 //! }
 //! ```
 
+#![warn(missing_docs)]
+
 pub use cypher_core::error::GqlError;
 pub use cypher_core::executor::{ExecutionBudget, MutationStats, QueryResult, Row};
 pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};

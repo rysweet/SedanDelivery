@@ -14,6 +14,8 @@
 //! assert_eq!(result.rows.len(), 1);
 //! ```
 
+#![warn(missing_docs)]
+
 use std::collections::HashMap;
 
 pub use gql_engine::{

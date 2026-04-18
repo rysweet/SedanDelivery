@@ -30,6 +30,8 @@
 //! QueryResult
 //! ```
 
+#![warn(missing_docs)]
+
 pub mod executor;
 pub mod parser;
 pub mod planner;
@@ -71,10 +73,15 @@ pub fn execute_with_context(
 /// Top-level GQL engine error.
 #[derive(Debug, thiserror::Error)]
 pub enum GqlError {
+    /// The GQL source text could not be parsed into an AST.
     #[error("parse error: {0}")]
     Parse(parser::GqlParseError),
+    /// Parsing succeeded but planning the query against the target graph failed
+    /// (e.g. unbound variable, missing graph, type mismatch in a literal).
     #[error("plan error: {0}")]
     Plan(cypher_core::error::GqlError),
+    /// Planning succeeded but executing the plan against the store failed
+    /// (e.g. budget exceeded, storage error, runtime type error).
     #[error("execution error: {0}")]
     Execution(executor::GqlExecutionError),
 }
