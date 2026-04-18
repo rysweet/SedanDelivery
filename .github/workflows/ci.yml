@@ -213,6 +213,13 @@ jobs:
         # Feature files were fixed to eliminate Gherkin template/parse issues.
         run: cargo test -p cypher-core --test tck
 
+      - name: Run TCK compliance suite via embedded crate (3903 scenarios)
+        # Proves sedan-cypher-embedded::CypherEngine's public API
+        # (execute_with_parameters) is fully compliant with the openCypher TCK.
+        # Same .feature files are symlinked from cypher-core; this guards
+        # against the embedded crate drifting from the underlying engine.
+        run: cargo test -p sedan-cypher-embedded --test tck_via_embedded
+
       - name: Run stress tests
         run: cargo test -p cypher-core --test stress
 

@@ -10,7 +10,16 @@ cypher-core = { path = "../cypher-core" }
 
 [dev-dependencies]
 criterion = { workspace = true }
+cucumber  = { workspace = true }
+indexmap  = { workspace = true }
+jiff      = { workspace = true }
+tokio     = { workspace = true }
 
 [[bench]]
 name    = "engine"
+harness = false
+
+[[test]]
+name    = "tck_via_embedded"
+path    = "tests/tck/runner.rs"
 harness = false

@@ -3728,7 +3728,11 @@ name = "sedan-cypher-embedded"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "cucumber",
  "cypher-core",
+ "indexmap",
+ "jiff",
+ "tokio",
 ]
 
 [[package]]
