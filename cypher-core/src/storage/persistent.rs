@@ -214,7 +214,7 @@ fn json_to_props(entries: Vec<(String, JsonValue)>) -> IndexMap<String, Value> {
 
 /// An [`InMemoryGraphStore`] with background disk persistence via WAL and snapshots.
 pub struct PersistentGraphStore {
-    inner: InMemoryGraphStore,
+    inner: Arc<InMemoryGraphStore>,
     wal: Mutex<BufWriter<File>>,
     config: PersistentConfig,
     shutdown: Arc<AtomicBool>,
@@ -244,7 +244,7 @@ impl PersistentGraphStore {
             msg: format!("failed to create data directory: {e}"),
         })?;
 
-        let inner = InMemoryGraphStore::new();
+        let inner = Arc::new(InMemoryGraphStore::new());
 
         // 1. Load snapshot
         let snapshot_path = config.data_dir.join("snapshot.json");
@@ -268,21 +268,19 @@ impl PersistentGraphStore {
             })?;
         let wal = Mutex::new(BufWriter::new(wal_file));
 
-        // 4. Start background snapshot thread
+        // 4. Start background snapshot thread.
+        // We share `inner` with the snapshot thread via Arc::clone — no
+        // unsafe, no raw pointers. The thread keeps its own strong reference
+        // for as long as it runs, and Drop joins it before the parent's Arc
+        // is released.
         let shutdown = Arc::new(AtomicBool::new(false));
         let snapshot_thread = {
             let shutdown = Arc::clone(&shutdown);
+            let inner = Arc::clone(&inner);
             let data_dir = config.data_dir.clone();
             let interval = config.snapshot_interval;
-            // We need a way for the snapshot thread to read from the inner store.
-            // Since InMemoryGraphStore uses Arc internally, we can share it.
-            // But InMemoryGraphStore is not Clone. We'll snapshot by reading through
-            // the GraphStore trait from a second reference. We use a raw pointer trick
-            // wrapped in Arc for safety — the store outlives the thread (joined on drop).
-            let inner_ptr = Arc::new(InnerRef(&inner as *const InMemoryGraphStore));
-
             thread::spawn(move || {
-                snapshot_loop(&shutdown, &data_dir, &inner_ptr, interval);
+                snapshot_loop(&shutdown, &data_dir, &inner, interval);
             })
         };
 
@@ -349,19 +347,14 @@ impl Drop for PersistentGraphStore {
     }
 }
 
-// ── Pointer wrapper for background thread ────────────────────────────────────
-
-struct InnerRef(*const InMemoryGraphStore);
-
-// SAFETY: The raw pointer is only dereferenced while the PersistentGraphStore (and thus
-// the InMemoryGraphStore it owns) is alive. The background thread is joined in Drop
-// before the InMemoryGraphStore is dropped, so the pointer is always valid.
-unsafe impl Send for InnerRef {}
-unsafe impl Sync for InnerRef {}
-
 // ── Background snapshot loop ─────────────────────────────────────────────────
 
-fn snapshot_loop(shutdown: &AtomicBool, data_dir: &Path, inner_ref: &InnerRef, interval: Duration) {
+fn snapshot_loop(
+    shutdown: &AtomicBool,
+    data_dir: &Path,
+    inner: &InMemoryGraphStore,
+    interval: Duration,
+) {
     // Sleep in small increments so we can respond to shutdown promptly.
     let tick = Duration::from_millis(100).min(interval);
     let mut elapsed = Duration::ZERO;
@@ -372,8 +365,6 @@ fn snapshot_loop(shutdown: &AtomicBool, data_dir: &Path, inner_ref: &InnerRef, i
 
         if elapsed >= interval {
             elapsed = Duration::ZERO;
-            // SAFETY: The pointer is valid because Drop joins this thread first.
-            let inner = unsafe { &*inner_ref.0 };
             if let Err(e) = write_snapshot(data_dir, inner) {
                 tracing::error!("snapshot failed: {e}");
                 continue;
