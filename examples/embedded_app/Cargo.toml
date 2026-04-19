@@ -1,0 +1,13 @@
+[package]
+name = "embedded-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Example app demonstrating SedanDelivery's three embedded graph engines"
+
+[dependencies]
+sedan-cypher-embedded = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+clap = { version = "4", features = ["derive"] }
+indexmap = { workspace = true }

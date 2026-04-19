@@ -17,6 +17,7 @@ members = [
     "tests/loadtest",
     "tests/gremlin-tck",
     "gql-engine",
+    "examples/embedded_app",
 ]
 exclude = ["examples/embedded-consumer"]
 resolver = "2"
