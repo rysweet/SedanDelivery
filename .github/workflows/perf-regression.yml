@@ -1,0 +1,137 @@
+name: Perf Regression Gate
+
+# Per-PR criterion benchmark perf-regression gate.
+#
+# - On pull_request: runs the curated criterion bench suite against the PR's
+#   base ref and HEAD via `scripts/perf_regression_check.sh`. Fails the job
+#   if any benchmark regresses by more than PERF_REGRESSION_THRESHOLD %
+#   (default 10).
+# - On push to main: runs the same suite once with `--save-baseline main`
+#   and uploads the criterion estimates as an artifact so the freshest
+#   baseline data is available for inspection / future workflows.
+#
+# This complements the existing `benchmarks` job in ci.yml, which runs only
+# on `perf`-labeled PRs and uses the bencher text format. This workflow is
+# the always-on criterion-JSON-based gate.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  PERF_REGRESSION_THRESHOLD: ${{ vars.PERF_REGRESSION_THRESHOLD || '10' }}
+
+jobs:
+  perf-regression:
+    name: Perf regression gate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout PR (full history for baseline diff)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perfgate-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-perfgate-
+
+      - name: Install libclang (bindgen)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+
+      - name: Ensure baseline ref is fetched
+        run: git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+
+      - name: Run perf regression gate
+        env:
+          BASELINE_REF: origin/${{ github.base_ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.sha }}
+          # Keep CI runtime bounded — short warm-up + measurement window.
+          CARGO_BENCH_ARGS: "--warm-up-time 1 --measurement-time 2"
+        run: bash scripts/perf_regression_check.sh
+
+      - name: Upload criterion results
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: criterion-perfgate-${{ github.event.pull_request.number }}
+          path: target/criterion/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  save-baseline:
+    name: Save criterion baseline (main)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perfgate-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-perfgate-
+
+      - name: Install libclang (bindgen)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+
+      # Mirrors the curated bench list in scripts/perf_regression_check.sh.
+      - name: Run benches and save criterion baseline "main"
+        run: |
+          set -e
+          benches=(
+            "cypher-core::parser"
+            "cypher-core::executor"
+            "cypher-core::property_index"
+            "gremlin-core::parse_compile"
+            "gql-engine::gql_parse"
+            "sedan-cypher-embedded::embedded_bench"
+            "sedan-gql-embedded::embedded_bench"
+            "sedan-gremlin-embedded::embedded_bench"
+          )
+          for spec in "${benches[@]}"; do
+            pkg="${spec%%::*}"
+            bench="${spec##*::}"
+            echo "::group::cargo bench -p $pkg --bench $bench -- --save-baseline main"
+            cargo bench --message-format=json -p "$pkg" --bench "$bench" \
+              -- --save-baseline main --warm-up-time 1 --measurement-time 2 \
+              || echo "WARN: $spec failed; continuing"
+            echo "::endgroup::"
+          done
+
+      - name: Upload criterion baseline
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: criterion-baseline-main
+          path: target/criterion/**
+          if-no-files-found: warn
+          retention-days: 90

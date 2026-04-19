@@ -97,6 +97,87 @@ cargo bench -p sedan-cypher-embedded --bench embedded_bench -- --baseline before
 For CI regression detection, save a baseline on `main` and compare PR runs
 against it. Treat `>5 %` regressions on the headline benches as actionable.
 
+## CI perf-regression gate
+
+Two CI jobs guard against silent perf regressions:
+
+| Workflow | Job | When | Format | Scope |
+| -------- | --- | ---- | ------ | ----- |
+| `.github/workflows/perf-regression.yml` | `perf-regression` | every PR | criterion `estimates.json` | curated workspace benches (no Redis/Bolt services) |
+| `.github/workflows/perf-regression.yml` | `save-baseline`   | push to `main` | criterion `--save-baseline main` | same curated set, archived as artifact (90 d) |
+| `.github/workflows/ci.yml`              | `benchmarks`      | `perf`-labeled PRs + `main` pushes | bencher text format | service-bound benches (`sedandelivery-bolt`, `sd2-redis-store`) |
+
+### What the gate runs
+
+`scripts/perf_regression_check.sh` is the single entry point. It:
+
+1. Checks out `BASELINE_REF` (default: `origin/main`) and runs each curated
+   bench with `cargo bench --message-format=json -- --save-baseline perfgate-baseline`.
+2. Checks out `HEAD_REF` (default: `HEAD`) and re-runs them with
+   `--save-baseline perfgate-head`.
+3. Walks `target/criterion/<group>/<bench>/<label>/estimates.json` and compares
+   the `mean.point_estimate` of each bench between the two labels.
+4. Prints a markdown-friendly table (bench | baseline ms | head ms | delta % |
+   status) and exits non-zero if any benchmark regressed by more than
+   `PERF_REGRESSION_THRESHOLD` percent (default **10**).
+
+### Default bench set
+
+| Crate                     | Bench                |
+| ------------------------- | -------------------- |
+| `cypher-core`             | `parser`             |
+| `cypher-core`             | `executor`           |
+| `cypher-core`             | `property_index`     |
+| `gremlin-core`            | `parse_compile`      |
+| `gql-engine`              | `gql_parse`          |
+| `sedan-cypher-embedded`   | `embedded_bench`     |
+| `sedan-gql-embedded`      | `embedded_bench`     |
+| `sedan-gremlin-embedded`  | `embedded_bench`     |
+
+`cypher-core::scale` and the bolt / redis benches are intentionally excluded
+from the always-on gate (too slow for a per-PR run, or require external
+services). They remain in the existing `benchmarks` job in `ci.yml`, which
+is opt-in via the `perf` PR label.
+
+### Running the gate locally
+
+```bash
+# Compare HEAD against origin/main with default 10 % threshold
+bash scripts/perf_regression_check.sh
+
+# Stricter threshold
+PERF_REGRESSION_THRESHOLD=5 bash scripts/perf_regression_check.sh
+
+# Compare against a specific ref
+BASELINE_REF=origin/release-1.4 bash scripts/perf_regression_check.sh
+
+# Smoke test — compares HEAD against itself (expect ~0 % delta)
+DRY_RUN=1 bash scripts/perf_regression_check.sh
+
+# Override the bench set
+BENCH_SPECS="cypher-core::executor sedan-cypher-embedded::embedded_bench" \
+  bash scripts/perf_regression_check.sh
+```
+
+The script requires a clean working tree (it uses `git checkout --detach` to
+swap between baseline and head); commit or stash local changes first.
+
+### Limitations
+
+* **GitHub-hosted ubuntu-latest runners** have noisy, shared CPUs. The default
+  threshold is set at **10 %** to avoid false positives — tighten via the
+  `PERF_REGRESSION_THRESHOLD` repo variable once a self-hosted dedicated
+  runner is available.
+* The CI job runs benches with `--warm-up-time 1 --measurement-time 2` to
+  fit in a 60-minute timeout. Local runs use criterion defaults, so local
+  measurements are more accurate than CI ones.
+* Benches that fail to compile or run on the baseline ref are skipped with a
+  warning rather than failing the gate (so the gate stays green when a new
+  bench is added in the PR itself).
+* `cargo bench --message-format=json` emits *cargo's* compile messages as
+  JSON, not criterion's measurement data. Measurement numbers are read from
+  the `target/criterion/**/estimates.json` files criterion writes natively.
+
 ## Notes
 
 * Graphs are seeded **once** outside the measured closure; the hot path only
