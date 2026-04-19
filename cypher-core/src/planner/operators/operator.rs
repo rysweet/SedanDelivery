@@ -1,28 +1,15 @@
-//! Physical plan operator types and supporting AST-like structures.
+//! The [`Operator`] enum — physical plan node for every supported step.
 //!
-//! Defines the complete physical plan operator set (33 operators) plus
-//! supporting types (CREATE patterns, SET/REMOVE items, aggregation functions).
+//! This is a single indivisible declaration (33 variants spanning openCypher
+//! and Gremlin operators). Supporting types (aggregation kinds, mutation
+//! specs, Gremlin helpers) live in sibling submodules; see the parent
+//! [`operators`](super) module docs for the full layout.
 
 use crate::ast::{Direction, Expr, Identifier, Label, RelType};
 
-/// Pop modifier for Gremlin select() — controls which labeled value to
-/// return when a label has been assigned multiple times.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GremlinPop {
-    First,
-    Last,
-    All,
-    Mixed,
-}
-
-#[derive(Debug, Clone)]
-pub enum GremlinSelectTraversal {
-    /// Evaluate a compiled by(traversal) sub-traversal for the selected key.
-    Traversal {
-        op: Box<Operator>,
-        out_alias: Identifier,
-    },
-}
+use super::aggregation::AggFunction;
+use super::gremlin_types::{GremlinPop, GremlinSelectTraversal};
+use super::mutation::{CreatePattern, RemoveItem, SetItem};
 
 #[derive(Debug, Clone)]
 pub enum Operator {
@@ -486,76 +473,5 @@ pub enum Operator {
         norm_sack: bool,
         sack_merge_op: Option<String>,
         with_bulk: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AggFunction {
-    Count,
-    Sum,
-    Avg,
-    Min,
-    Max,
-    Collect,
-    /// Like Collect but includes null values (used by Gremlin fold()).
-    CollectAll,
-    StDev,
-    StDevP,
-    PercentileCont,
-    PercentileDisc,
-}
-
-/// Type alias for a node specification in a CREATE pattern:
-/// `(alias, labels, property_pairs)`
-pub type CreateNodeSpec = (Option<Identifier>, Vec<Label>, Vec<(String, Expr)>);
-
-/// Type alias for an edge specification in a CREATE pattern:
-/// `(alias, src_alias, dst_alias, rel_type, direction, property_pairs)`
-pub type CreateEdgeSpec = (
-    Option<Identifier>,
-    Identifier,
-    Identifier,
-    RelType,
-    Direction,
-    Vec<(String, Expr)>,
-);
-
-#[derive(Debug, Clone)]
-pub struct CreatePattern {
-    pub nodes: Vec<CreateNodeSpec>,
-    pub edges: Vec<CreateEdgeSpec>,
-}
-
-#[derive(Debug, Clone)]
-pub enum SetItem {
-    Property {
-        alias: Identifier,
-        key: String,
-        value: Expr,
-    },
-    Labels {
-        alias: Identifier,
-        labels: Vec<Label>,
-    },
-    DynamicLabels {
-        alias: Identifier,
-        value: Expr,
-    },
-    Map {
-        alias: Identifier,
-        map: Expr,
-        merge: bool,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum RemoveItem {
-    Property {
-        alias: Identifier,
-        key: String,
-    },
-    Labels {
-        alias: Identifier,
-        labels: Vec<Label>,
     },
 }
