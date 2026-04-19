@@ -27,16 +27,16 @@ function corners.
 | `cypher-core`             | **75.39%** |    77.54% |          106 |    70% |
 | `gql-engine`              | **78.35%** |    85.71% |            5 |    70% |
 | `gremlin-core`            | **71.92%** |    79.75% |           40 |    70% |
-| `sedan-cypher-embedded`   | **65.48%** |    60.00% |            1 |    70% |
+| `sedan-cypher-embedded`   | **100.00%** |   100.00% |            1 |    70% |
 | `sedan-gql-embedded`      | **100.00%** |   100.00% |            1 |    70% |
 | `sedan-gremlin-embedded`  | **96.43%** |    88.24% |            1 |    70% |
 
 Percentages come from `cargo llvm-cov --lib --json`
 (`data[0].totals.{lines,functions}.percent`); files-tested is `len(data[0].files)`.
 Crates already above the 70% line-coverage target: `gql-engine`,
-`sedan-gql-embedded`, `sedan-gremlin-embedded`. Crates still below target
-(gap work tracked separately): `cypher-core`, `gremlin-core`,
-`sedan-cypher-embedded`. The most dramatic delta from #1336/#1345 is
+`sedan-gql-embedded`, `sedan-gremlin-embedded`, `sedan-cypher-embedded`.
+Crates still below target (gap work tracked separately): `cypher-core`,
+`gremlin-core`. The most dramatic delta from #1336/#1345 is
 `gremlin-core` (44.05% → 58.97% → 56.65%, +12.60pt net) driven by #1353 + #1355,
 with a small artifactual dip from the helpers/ submodule split (file-boundary
 instrumentation, no behavior change);
@@ -50,14 +50,13 @@ All additions are pure additive tests; no production code changed.
 
 ### Top gap modules (highest-LOC files pulling line% down)
 
-The three crates still below the 70% line-coverage floor and the
+The two crates still below the 70% line-coverage floor and the
 single highest-LOC, lowest-coverage module dragging each one down:
 
 | Crate                   | Module (file)                                                |   LOC | Line%  |
 | ----------------------- | ------------------------------------------------------------ | ----: | -----: |
 | `gremlin-core`          | `src/compiler/helpers/predicate_label.rs`                    |   189 | 19.58% |
 | `cypher-core`           | `src/storage/cached.rs`                                      |   953 | 41.87% |
-| `sedan-cypher-embedded` | `src/lib.rs`                                                 |    84 | 65.48% |
 
 Other notable low-coverage hot spots (informational, not separately tracked):
 

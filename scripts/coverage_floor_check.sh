@@ -13,7 +13,7 @@ CRATES_AND_FLOORS=(
   "cypher-core 74.0"
   "gql-engine 78.35"
   "gremlin-core 70.5"
-  "sedan-cypher-embedded 65.48"
+  "sedan-cypher-embedded 99.0"
   "sedan-gql-embedded 99.0"
   "sedan-gremlin-embedded 96.43"
 )
