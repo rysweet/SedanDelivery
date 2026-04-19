@@ -21,7 +21,40 @@ use sd2_redis_store::RedisGraphStore;
 use uuid::Uuid;
 
 const INDEXING_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/indexing.rs"));
-const LIB_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs"));
+// `lib.rs` was decomposed into `lib.rs` + `store/{mod,pool,locks,config,registry}.rs`
+// + `graph_store_impl.rs` + `entity_reads.rs` (PRs #1384, #1432, #1512).
+// Concatenate every fragment so the source-grep audits below continue to
+// find the contracts they depend on.
+const LIB_SRC: &str = concat!(
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs")),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/store/mod.rs")),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/store/pool.rs")),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/store/locks.rs")),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/store/config.rs")),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/store/registry.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/graph_store_impl.rs"
+    )),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/entity_reads.rs")),
+    // `locked_conn/` houses the with_write_lock outcome handling that
+    // historically lived in lib.rs. Include the runtime sources (skip tests.rs).
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/locked_conn/mod.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/locked_conn/conn.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/locked_conn/outcomes.rs"
+    )),
+);
 const LOCK_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/lock.rs"));
 const METRICS_SRC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -104,11 +137,11 @@ const EDGES_SRC: &str = concat!(
         "/src/writes/edges/batch.rs"
     )),
 );
+// `writes/graphs/mod.rs` contains test code that mentions function signatures
+// as string literals (e.g. `.split("pub(crate) fn delete_graph_impl")`); place
+// the real implementation files first so `function_block` finds the actual
+// function bodies before the test references.
 const GRAPHS_SRC: &str = concat!(
-    include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/src/writes/graphs/mod.rs"
-    )),
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/writes/graphs/create.rs"
@@ -120,6 +153,12 @@ const GRAPHS_SRC: &str = concat!(
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/writes/graphs/delete_collect.rs"
+    )),
+    // mod.rs last — its #[cfg(test)] code mentions function signatures as
+    // string literals which must not shadow the real implementations.
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/graphs/mod.rs"
     )),
 );
 const READS_SRC: &str = concat!(
@@ -140,6 +179,10 @@ const READS_SRC: &str = concat!(
         "/src/reads/enumeration.rs"
     )),
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/admin.rs")),
+    // `reads/entities.rs::read_nodes_batch` was extracted to `entity_reads.rs`
+    // (PR #1432). Include it so the source-grep audits still find the
+    // batch-read contract assertions.
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/entity_reads.rs")),
 );
 
 fn strip_line_comments(source: &str) -> String {
