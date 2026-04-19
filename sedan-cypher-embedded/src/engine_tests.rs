@@ -108,6 +108,34 @@ fn with_cache_capacity_large_repeats_hit_cache() {
     assert_eq!(r2.rows[0]["msg"], Value::Str("cached".into()));
 }
 
+// ── cache_len ───────────────────────────────────────────────────────────
+
+#[test]
+fn cache_len_starts_at_zero_and_grows_on_cache_miss() {
+    let engine = CypherEngine::new();
+    assert_eq!(engine.cache_len(), 0);
+    let store = test_store();
+    engine.execute(&store, "test", "RETURN 1 AS n").unwrap();
+    assert_eq!(engine.cache_len(), 1);
+    engine.execute(&store, "test", "RETURN 2 AS n").unwrap();
+    assert_eq!(engine.cache_len(), 2);
+    // Cache hit: same query string → no new entry.
+    engine.execute(&store, "test", "RETURN 1 AS n").unwrap();
+    assert_eq!(engine.cache_len(), 2);
+}
+
+#[test]
+fn cache_len_with_zero_capacity_never_exceeds_one() {
+    let engine = CypherEngine::with_cache_capacity(0);
+    let store = test_store();
+    for i in 0..4 {
+        engine
+            .execute(&store, "test", &format!("RETURN {i} AS n"))
+            .unwrap();
+        assert!(engine.cache_len() <= 1);
+    }
+}
+
 // ── clear_cache ─────────────────────────────────────────────────────────
 
 #[test]

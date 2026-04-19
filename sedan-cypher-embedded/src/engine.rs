@@ -126,6 +126,21 @@ impl CypherEngine {
         self.cache.clear();
     }
 
+    /// Return the number of plans currently cached.
+    ///
+    /// Primarily useful for tests and diagnostics that need to verify cache
+    /// behavior (capacity, eviction, clearing). Returns `0` for engines
+    /// constructed with [`CypherEngine::with_cache_capacity(0)`].
+    ///
+    /// ```
+    /// # use sedan_cypher_embedded::CypherEngine;
+    /// let engine = CypherEngine::new();
+    /// assert_eq!(engine.cache_len(), 0);
+    /// ```
+    pub fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
     /// Parse, plan, and execute an openCypher query with caller-supplied
     /// parameters and an optional procedure registry.
     ///

@@ -1,3 +1,4 @@
+pub fn cache_len(&self) -> usize {
 pub fn clear_cache(&self) {
 pub fn execute(
 pub fn execute_with_parameters(
@@ -9,3 +10,4 @@ pub use cypher_core::executor::{MutationStats, QueryResult, Row};
 pub use cypher_core::procedure::ProcedureRegistry;
 pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
 pub use cypher_core::types::Value;
+pub use engine::CypherEngine;

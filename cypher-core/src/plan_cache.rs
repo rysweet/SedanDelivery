@@ -71,14 +71,12 @@ impl PlanCache {
     }
 
     /// Return the number of entries currently in the cache.
-    #[cfg(test)]
     pub fn len(&self) -> usize {
         let guard = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         guard.len()
     }
 
     /// Return `true` if the cache is empty.
-    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

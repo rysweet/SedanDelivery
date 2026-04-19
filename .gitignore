@@ -44,3 +44,7 @@ target/llvm-cov-reports/
 # Local agent/test runtime artifacts
 logs/
 outputs/sessions/
+
+# cargo-mutants output
+mutants.*.out/
+mutants.out/
