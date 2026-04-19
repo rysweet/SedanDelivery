@@ -322,6 +322,13 @@ jobs:
       - name: Generate coverage
         run: cargo tarpaulin -p cypher-core --lib --out xml --output-dir coverage/ --fail-under 70 -- --test-threads 1
 
+      - name: Coverage floor check (do not regress baseline)
+        # Per-crate floor enforcement against the values recorded in
+        # docs/COVERAGE.md "Baseline (2026-04-19, refreshed post-#1357)".
+        # Allows a 1pt tolerance for measurement noise; fails the job
+        # if any tracked crate drops below floor − tolerance.
+        run: bash scripts/coverage_floor_check.sh
+
       - name: Upload coverage to GitHub
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
