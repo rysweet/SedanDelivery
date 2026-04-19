@@ -230,20 +230,25 @@ pub(crate) fn parse_single_value(
     }
 
     // Numeric with type suffix: 1b (byte), 2s (short), 3i (int), 4L (long), 0.5f/0.5d (float/double)
-    if s.len() > 1 {
-        let suffix = s.as_bytes()[s.len() - 1];
-        let num_part = &s[..s.len() - 1];
-        if matches!(
-            suffix,
-            b'b' | b's' | b'i' | b'l' | b'L' | b'n' | b'B' | b'S' | b'I' | b'N'
-        ) {
-            if let Ok(n) = num_part.parse::<i64>() {
-                return Ok(GremlinValue::Integer(n));
+    // Use char-boundary-safe slicing — `s.len() - 1` would split a multi-byte
+    // UTF-8 character and panic. The suffix is always a single ASCII letter,
+    // so a non-ASCII final character means there is no suffix to strip.
+    if let Some(last_ch) = s.chars().next_back() {
+        if last_ch.is_ascii() && s.len() > 1 {
+            let suffix = last_ch as u8;
+            let num_part = &s[..s.len() - 1];
+            if matches!(
+                suffix,
+                b'b' | b's' | b'i' | b'l' | b'L' | b'n' | b'B' | b'S' | b'I' | b'N'
+            ) {
+                if let Ok(n) = num_part.parse::<i64>() {
+                    return Ok(GremlinValue::Integer(n));
+                }
             }
-        }
-        if matches!(suffix, b'f' | b'd' | b'F' | b'D' | b'm' | b'M') {
-            if let Ok(f) = num_part.parse::<f64>() {
-                return Ok(GremlinValue::Float(f));
+            if matches!(suffix, b'f' | b'd' | b'F' | b'D' | b'm' | b'M') {
+                if let Ok(f) = num_part.parse::<f64>() {
+                    return Ok(GremlinValue::Float(f));
+                }
             }
         }
     }
@@ -317,4 +322,23 @@ pub(crate) fn parse_single_value(
 
     // Unknown — treat as parameter name / string
     Ok(GremlinValue::String(s.to_string()))
+}
+
+#[cfg(test)]
+mod utf8_panic_tests {
+    use crate::text_parser::parse_traversal;
+
+    #[test]
+    fn parse_traversal_does_not_panic_on_multibyte_input() {
+        // Regression test for issue #1674: this fuzz input previously
+        // panicked inside `parse_single_value` when slicing
+        // `&s[..s.len()-1]` cut through a multi-byte UTF-8 character.
+        let input = "g.V(nows\").values(\"n\"n(\"\"ӊѐ)";
+        let _ = parse_traversal(input, &|_| None);
+    }
+
+    #[test]
+    fn parse_traversal_handles_unicode_string_args() {
+        let _ = parse_traversal("g.V().has(\"name\", \"日本語\")", &|_| None);
+    }
 }
