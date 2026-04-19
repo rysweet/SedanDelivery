@@ -13,6 +13,7 @@ criterion = { workspace = true }
 cucumber  = { workspace = true }
 indexmap  = { workspace = true }
 jiff      = { workspace = true }
+proptest  = { workspace = true }
 tokio     = { workspace = true }
 
 [[bench]]

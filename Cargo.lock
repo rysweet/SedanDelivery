@@ -3743,6 +3743,7 @@ dependencies = [
  "cypher-core",
  "indexmap",
  "jiff",
+ "proptest",
  "tokio",
 ]
 
@@ -3766,6 +3767,7 @@ dependencies = [
  "gremlin-core",
  "gremlin-tck",
  "indexmap",
+ "proptest",
  "thiserror 2.0.18",
 ]
 

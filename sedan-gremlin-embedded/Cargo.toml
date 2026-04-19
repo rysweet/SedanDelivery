@@ -13,6 +13,7 @@ thiserror    = { workspace = true }
 [dev-dependencies]
 criterion = { workspace = true }
 indexmap = { workspace = true }
+proptest  = { workspace = true }
 gremlin-tck = { path = "../tests/gremlin-tck" }
 
 [[bench]]
