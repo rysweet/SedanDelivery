@@ -1,0 +1,1 @@
+MATCH (n) FOR x IN n.items RETURN x

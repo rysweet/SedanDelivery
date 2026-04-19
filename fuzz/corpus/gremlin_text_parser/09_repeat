@@ -1,0 +1,1 @@
+g.V().repeat(out()).times(2).path()

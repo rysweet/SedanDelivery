@@ -1,0 +1,1 @@
+MATCH (n:Account) FILTER n.balance >= 100 RETURN n.id, n.balance

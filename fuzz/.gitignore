@@ -1,0 +1,4 @@
+# cargo-fuzz build artifacts and discovered crashes
+target/
+artifacts/
+coverage/

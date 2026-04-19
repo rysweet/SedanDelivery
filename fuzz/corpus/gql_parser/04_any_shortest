@@ -1,0 +1,1 @@
+MATCH ANY SHORTEST p = (a)-[*]->(b) RETURN p

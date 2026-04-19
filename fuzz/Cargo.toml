@@ -1,0 +1,48 @@
+[package]
+name = "sedandelivery-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+resolver = "2"
+
+# This crate is intentionally NOT a member of the workspace. cargo-fuzz uses
+# its own build profiles and (typically) a nightly toolchain; keeping it
+# isolated avoids forcing every workspace build to materialize the fuzz
+# dependencies or pin to nightly.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Path deps to the parsers under test. These resolve relative to the workspace
+# root because the fuzz crate sits at <workspace_root>/fuzz/.
+cypher-core  = { path = "../cypher-core" }
+gql-engine   = { path = "../gql-engine" }
+gremlin-core = { path = "../gremlin-core" }
+
+[[bin]]
+name = "cypher_parser"
+path = "fuzz_targets/cypher_parser.rs"
+test = false
+doc  = false
+bench = false
+
+[[bin]]
+name = "gql_parser"
+path = "fuzz_targets/gql_parser.rs"
+test = false
+doc  = false
+bench = false
+
+[[bin]]
+name = "gremlin_text_parser"
+path = "fuzz_targets/gremlin_text_parser.rs"
+test = false
+doc  = false
+bench = false
+
+[profile.release]
+debug = 1

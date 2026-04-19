@@ -1,0 +1,1 @@
+MANDATORY MATCH (n:Required) RETURN n

@@ -1,0 +1,1 @@
+g.V().has("age",gt(30)).values("name")

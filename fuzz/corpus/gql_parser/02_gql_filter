@@ -1,0 +1,1 @@
+MATCH (n:Person) FILTER n.age > 18 RETURN n

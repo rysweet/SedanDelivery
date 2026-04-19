@@ -20,7 +20,7 @@ members = [
     "gql-engine",
     "examples/embedded_app",
 ]
-exclude = ["examples/embedded-consumer"]
+exclude = ["examples/embedded-consumer", "fuzz"]
 resolver = "2"
 
 [workspace.package]
