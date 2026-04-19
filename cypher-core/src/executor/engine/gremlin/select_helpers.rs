@@ -172,8 +172,15 @@ impl<'a> QueryExecutor<'a> {
                 return self.resolve_in_values_min_for_filter(graph, rel_type, prop, val);
             }
         }
+        // Only the canonical Gremlin T-token forms (`~label`, `T.label`, etc.)
+        // are intercepted here. The bare lowercase aliases (`"label"`, `"id"`,
+        // `"key"`, `"value"`) are NOT special-cased: in the filter context the
+        // key passed in is always a literal property name, so treating
+        // `has("value", X)` as a T-token would shadow legitimate user
+        // properties named `value`/`id`/`label`/`key` and silently return the
+        // element itself — see issue #1710.
         match prop_name {
-            "~label" | "T.label" | "label" => match val {
+            "~label" | "T.label" => match val {
                 Value::Node(node_id) => Ok(match self.cached_get_node(graph, *node_id)? {
                     Some(node_data) => node_data
                         .labels
@@ -189,16 +196,16 @@ impl<'a> QueryExecutor<'a> {
                 }),
                 _ => Ok(val.clone()),
             },
-            "~id" | "T.id" | "id" => Ok(match val {
+            "~id" | "T.id" => Ok(match val {
                 Value::Node(nid) => Value::Int(nid.0 as i64),
                 Value::Edge(eid) => Value::Int(eid.0 as i64),
                 _ => val.clone(),
             }),
-            "~key" | "T.key" | "key" => Ok(match val {
+            "~key" | "T.key" => Ok(match val {
                 Value::Map(m) => m.get("~key").cloned().unwrap_or_else(|| val.clone()),
                 _ => val.clone(),
             }),
-            "~value" | "T.value" | "value" => Ok(match val {
+            "~value" | "T.value" => Ok(match val {
                 Value::Map(m) => m.get("~value").cloned().unwrap_or_else(|| val.clone()),
                 _ => val.clone(),
             }),
