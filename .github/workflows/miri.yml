@@ -1,0 +1,54 @@
+name: miri
+
+# Miri smoke run for undefined-behavior detection. See docs/MIRI.md for
+# the audit of unsafe blocks and the rationale for the curated test set.
+#
+# The job is non-blocking (continue-on-error) while we establish a
+# baseline. Promote it to a required check once it has been green for
+# two consecutive weeks.
+#
+# To run on a PR, add the `run-miri` label or trigger via workflow_dispatch.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+  schedule:
+    # Daily at 06:45 UTC, 15 minutes after the fuzz-smoke run.
+    - cron: '45 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  miri:
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'run-miri'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+
+      - name: Install nightly Rust + miri component
+        run: |
+          rustup toolchain install nightly --profile minimal \
+            --component miri --component rust-src
+          rustup +nightly --version
+          cargo +nightly miri --version
+
+      - name: Cache Miri sysroot + cargo registry
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cache/miri
+            target-miri
+          key: miri-${{ runner.os }}-${{ hashFiles('cypher-core/**/*.rs', 'Cargo.lock') }}
+          restore-keys: |
+            miri-${{ runner.os }}-
+
+      - name: Run Miri smoke suite
+        run: bash scripts/run_miri.sh
