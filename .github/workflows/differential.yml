@@ -1,0 +1,63 @@
+name: Differential Parity
+
+# Cross-engine differential testing: asserts that cypher-core, gql-engine, and
+# gremlin-core return semantically equivalent results for a curated set of
+# parity cases on a shared in-memory graph fixture.
+#
+# This catches divergence bugs (one engine returns different rows than the
+# others for an equivalent query) before they reach production. Documented
+# semantic differences are tracked via DivergenceMode::Documented in
+# tests/differential/src/cases.rs and do not fail the run — see
+# docs/DIFFERENTIAL_TESTING.md for the catalog and rationale.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'cypher-core/**'
+      - 'gql-engine/**'
+      - 'gremlin-core/**'
+      - 'sedan-cypher-embedded/**'
+      - 'sedan-gql-embedded/**'
+      - 'sedan-gremlin-embedded/**'
+      - 'tests/differential/**'
+      - 'scripts/run_differential_tests.sh'
+      - '.github/workflows/differential.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  differential:
+    name: Cross-engine parity suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-differential-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-differential-
+
+      - name: Run differential parity suite
+        run: bash scripts/run_differential_tests.sh

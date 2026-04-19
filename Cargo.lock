@@ -1054,6 +1054,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "differential"
+version = "0.1.0"
+dependencies = [
+ "cypher-core",
+ "gql-engine",
+ "gremlin-core",
+ "indexmap",
+ "jiff",
+ "sedan-cypher-embedded",
+ "sedan-gql-embedded",
+ "sedan-gremlin-embedded",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

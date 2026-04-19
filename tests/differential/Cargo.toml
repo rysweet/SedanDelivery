@@ -1,0 +1,20 @@
+[package]
+name = "differential"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Differential testing harness asserting result parity across SedanDelivery's three query engines (cypher-core, gql-engine, gremlin-core)"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cypher-core = { path = "../../cypher-core" }
+gql-engine = { path = "../../gql-engine" }
+gremlin-core = { path = "../../gremlin-core" }
+sedan-cypher-embedded = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+indexmap = { workspace = true }
+jiff = { workspace = true }
