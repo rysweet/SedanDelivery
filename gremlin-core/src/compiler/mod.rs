@@ -88,7 +88,7 @@ pub struct GremlinCompiler {
 }
 
 #[derive(Debug, Clone)]
-enum SelectByModulator {
+pub(super) enum SelectByModulator {
     Key(String),
     Traversal(Vec<GremlinStep>),
 }
@@ -397,6 +397,7 @@ impl GremlinCompiler {
 
 mod branches;
 mod compile_from;
+mod compile_from_context;
 mod helpers;
 use helpers::*;
 
