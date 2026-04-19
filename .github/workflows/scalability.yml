@@ -1,0 +1,19 @@
+name: scalability
+
+on:
+  schedule:
+    # Nightly at 07:30 UTC.
+    - cron: "30 7 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  scalability:
+    name: embedded-engines large-data
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run scalability suite
+        run: cargo test -p scalability-tests --release -- --ignored --nocapture

@@ -1,0 +1,26 @@
+[package]
+name = "scalability-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Large-data scalability tests for the embedded SedanDelivery engines"
+publish = false
+
+[dependencies]
+cypher-core = { path = "../../cypher-core" }
+sedan-cypher-embedded = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+indexmap = { workspace = true }
+
+[[test]]
+name = "cypher_scale"
+path = "tests/cypher_scale.rs"
+
+[[test]]
+name = "gql_scale"
+path = "tests/gql_scale.rs"
+
+[[test]]
+name = "gremlin_scale"
+path = "tests/gremlin_scale.rs"
