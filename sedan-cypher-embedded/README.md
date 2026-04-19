@@ -175,6 +175,17 @@ labels, type, nodes, relationships).
 DateTime, LocalDateTime, Duration, Point (WGS-84/Cartesian 2D/3D), Bytes,
 Node, Edge, Path.
 
+## More
+
+- [Embedded Library Usage Guide](../docs/EMBEDDED_GUIDE.md) — cypher vs gql vs
+  gremlin comparison, sophisticated patterns, storage backends.
+- Runnable examples: [`examples/quickstart.rs`](examples/quickstart.rs),
+  [`examples/sophisticated.rs`](examples/sophisticated.rs).
+  ```bash
+  cargo run --example quickstart    -p sedan-cypher-embedded
+  cargo run --example sophisticated -p sedan-cypher-embedded
+  ```
+
 ## License
 
 MIT OR Apache-2.0

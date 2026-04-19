@@ -204,6 +204,17 @@ Run the end-to-end execution benchmarks (parse + compile + execute on a
 cargo bench -p sedan-gremlin-embedded
 ```
 
+## More
+
+- [Embedded Library Usage Guide](../docs/EMBEDDED_GUIDE.md) — cypher vs gql vs
+  gremlin comparison, sophisticated patterns, storage backends.
+- Runnable examples: [`examples/quickstart.rs`](examples/quickstart.rs),
+  [`examples/sophisticated.rs`](examples/sophisticated.rs).
+  ```bash
+  cargo run --example quickstart    -p sedan-gremlin-embedded
+  cargo run --example sophisticated -p sedan-gremlin-embedded
+  ```
+
 ## License
 
 MIT OR Apache-2.0
