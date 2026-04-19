@@ -1,96 +1,9 @@
-//! Shared error type that converts to an Axum JSON response.
+//! `From` impls mapping `cypher_core` errors to [`ApiError`] with appropriate
+//! HTTP status codes.
 
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
-use serde::Serialize;
 
-/// Wire format for all error responses: `{ "error": "..." }`.
-#[derive(Debug, Serialize)]
-pub struct ErrorBody {
-    pub error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
-/// A typed API error that knows its HTTP status code.
-#[derive(Debug)]
-pub struct ApiError {
-    status: StatusCode,
-    message: String,
-    pub detail: Option<String>,
-}
-
-impl ApiError {
-    pub fn new(status: StatusCode, msg: impl Into<String>) -> Self {
-        Self {
-            status,
-            message: msg.into(),
-            detail: None,
-        }
-    }
-
-    pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: msg.into(),
-            detail: None,
-        }
-    }
-
-    pub fn not_found(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_FOUND,
-            message: msg.into(),
-            detail: None,
-        }
-    }
-
-    pub fn conflict(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::CONFLICT,
-            message: msg.into(),
-            detail: None,
-        }
-    }
-
-    pub fn internal(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: msg.into(),
-            detail: None,
-        }
-    }
-
-    pub fn unprocessable(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::UNPROCESSABLE_ENTITY,
-            message: msg.into(),
-            detail: None,
-        }
-    }
-
-    pub fn payload_too_large(code: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::PAYLOAD_TOO_LARGE,
-            message: code.into(),
-            detail: Some(detail.into()),
-        }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(ErrorBody {
-                error: self.message,
-                message: self.detail,
-            }),
-        )
-            .into_response()
-    }
-}
+use super::types::ApiError;
 
 /// Convert a `cypher_core::error::GqlError` into an API error.
 impl From<cypher_core::error::GqlError> for ApiError {
@@ -163,52 +76,7 @@ impl From<cypher_core::error::StorageError> for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::StatusCode;
     use cypher_core::error::{ExecutionError, GqlError, ParseError, PlanError, StorageError};
-
-    // ── Constructor tests ────────────────────────────────────────────────────
-
-    #[test]
-    fn bad_request_constructor() {
-        let e = ApiError::bad_request("invalid input");
-        assert_eq!(e.status, StatusCode::BAD_REQUEST);
-        assert_eq!(e.message, "invalid input");
-    }
-
-    #[test]
-    fn not_found_constructor() {
-        let e = ApiError::not_found("not here");
-        assert_eq!(e.status, StatusCode::NOT_FOUND);
-        assert_eq!(e.message, "not here");
-    }
-
-    #[test]
-    fn conflict_constructor() {
-        let e = ApiError::conflict("already exists");
-        assert_eq!(e.status, StatusCode::CONFLICT);
-        assert_eq!(e.message, "already exists");
-    }
-
-    #[test]
-    fn internal_constructor() {
-        let e = ApiError::internal("boom");
-        assert_eq!(e.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(e.message, "boom");
-    }
-
-    #[test]
-    fn unprocessable_constructor() {
-        let e = ApiError::unprocessable("bad entity");
-        assert_eq!(e.status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(e.message, "bad entity");
-    }
-
-    #[test]
-    fn new_constructor_custom_status() {
-        let e = ApiError::new(StatusCode::IM_A_TEAPOT, "teapot");
-        assert_eq!(e.status, StatusCode::IM_A_TEAPOT);
-        assert_eq!(e.message, "teapot");
-    }
 
     // ── From<GqlError> conversion tests ──────────────────────────────────────
 
@@ -357,28 +225,16 @@ mod tests {
 
 // ── WS-F (#755): DeleteGraphTooLarge → HTTP 413 ──────────────────────────────
 //
-// These tests will FAIL TO COMPILE until:
-//   (a) StorageError::DeleteGraphTooLarge is added to cypher-core/src/error.rs
-//   (b) ApiError gains a `detail: Option<String>` field and a
-//       `payload_too_large(code, detail)` constructor
-//   (c) From<GqlError> gains a DeleteGraphTooLarge → HTTP 413 arm
-//   (d) ErrorBody gains an optional `message: Option<String>` field with
-//       #[serde(skip_serializing_if = "Option::is_none")]
-//
-// The two tests here close the "C" sub-scenario in
+// These tests close the "C" sub-scenario in
 // tests/qa/gadugi/issue-755-oversized-delete-error-contract.yaml.
 
 #[cfg(test)]
 mod ws_f_delete_graph_too_large_api_tests {
     use super::*;
-    use axum::http::StatusCode;
+    use crate::error::ErrorBody;
     use cypher_core::error::{GqlError, StorageError};
 
     /// Verify that StorageError::DeleteGraphTooLarge produces HTTP 413 PAYLOAD_TOO_LARGE.
-    ///
-    /// FAILS TO COMPILE until:
-    ///   - StorageError::DeleteGraphTooLarge variant exists in cypher-core
-    ///   - From<GqlError> arm maps it to ApiError::payload_too_large(...)
     #[test]
     fn delete_graph_too_large_maps_to_payload_too_large() {
         let e = GqlError::Storage(StorageError::DeleteGraphTooLarge {
@@ -406,12 +262,6 @@ mod ws_f_delete_graph_too_large_api_tests {
     ///
     /// Information-disclosure prevention: counts and limits are internal housekeeping
     /// values that must not be surfaced to API callers (SEC-6 / AC-3 from issue #755).
-    ///
-    /// FAILS TO COMPILE until:
-    ///   - StorageError::DeleteGraphTooLarge variant exists in cypher-core
-    ///   - ApiError has a `detail: Option<String>` field
-    ///   - ErrorBody has a `message: Option<String>` field with skip_serializing_if
-    ///   - From<GqlError> arm populates detail with the human-readable message
     #[test]
     fn delete_graph_too_large_does_not_leak_resource_count_in_response() {
         let e = GqlError::Storage(StorageError::DeleteGraphTooLarge {
