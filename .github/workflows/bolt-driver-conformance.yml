@@ -1,0 +1,54 @@
+name: Bolt Driver Conformance
+
+# Driver-based Bolt v4.4 conformance tests using the `neo4rs` Rust driver
+# against an in-memory `sedandelivery-bolt` server. This complements the
+# existing `Bolt v4.4 Compatibility` workflow (Python `neo4j` driver) and
+# `Two Bolt instances + shared Redis` workflow (multi-instance correctness)
+# by exercising the wire protocol with a *different* driver implementation
+# — catching driver-specific encoding / framing assumptions.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'sedandelivery-bolt/**'
+      - 'cypher-core/src/**'
+      - 'tests/bolt-driver-conformance/**'
+      - 'scripts/run_bolt_conformance.sh'
+      - '.github/workflows/bolt-driver-conformance.yml'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  conformance:
+    name: neo4rs driver conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bolt-conformance-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bolt-conformance-
+
+      - name: Run Bolt driver conformance suite
+        run: bash scripts/run_bolt_conformance.sh

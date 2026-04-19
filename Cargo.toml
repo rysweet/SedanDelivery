@@ -16,6 +16,7 @@ members = [
     "sedan-gremlin-embedded",
     "tests/loadtest",
     "tests/gremlin-tck",
+    "tests/bolt-driver-conformance",
     "gql-engine",
     "examples/embedded_app",
 ]

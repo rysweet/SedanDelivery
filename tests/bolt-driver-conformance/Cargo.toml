@@ -1,0 +1,18 @@
+[package]
+name        = "bolt-driver-conformance"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+description = "Driver-based Bolt v4.4 protocol conformance tests for sedandelivery-bolt using neo4rs"
+publish     = false
+
+# This crate has no library/binary surface — only integration tests under tests/.
+# All tests are marked `#[ignore]` so `cargo test --workspace` does not require
+# a running Bolt server. Run via `scripts/run_bolt_conformance.sh`.
+
+[dependencies]
+
+[dev-dependencies]
+neo4rs         = "0.8"
+tokio          = { version = "1", features = ["full"] }
+assert_matches = "1.5"
