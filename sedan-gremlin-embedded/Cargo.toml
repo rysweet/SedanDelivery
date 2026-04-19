@@ -3,6 +3,7 @@ name    = "sedan-gremlin-embedded"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version = "1.89.0"
 description = "Embeddable Gremlin query engine with in-memory graph store"
 
 [dependencies]

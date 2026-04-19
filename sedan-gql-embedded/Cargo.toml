@@ -3,6 +3,7 @@ name    = "sedan-gql-embedded"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version = "1.89.0"
 readme  = "README.md"
 description = "Embeddable GQL/Cypher query engine backed by gql-engine"
 
