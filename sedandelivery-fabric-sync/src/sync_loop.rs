@@ -11,8 +11,9 @@ use redis::{Client, Connection, RedisResult, Value as RV};
 use tracing::{error, warn};
 
 use crate::apply::apply_event;
+use crate::config::{RedisTimeouts, GROUP_NAME};
+use crate::connection::{connect_with_retry, SHUTDOWN};
 use crate::parse_reply::{extract_entries, StreamEntry};
-use crate::{connect_with_retry, RedisTimeouts, GROUP_NAME, SHUTDOWN};
 
 fn dlq_stream() -> String {
     std::env::var("SYNC_DLQ_STREAM").unwrap_or_else(|_| "__sd2:changelog:dlq".to_string())

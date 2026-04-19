@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cypher_core::changelog::{ChangeEvent, CHANGELOG_STREAM};
 
-fn test_redis_timeouts() -> crate::RedisTimeouts {
-    crate::RedisTimeouts {
+fn test_redis_timeouts() -> crate::config::RedisTimeouts {
+    crate::config::RedisTimeouts {
         connect_timeout: std::time::Duration::from_secs(1),
         read_timeout: std::time::Duration::from_secs(1),
         write_timeout: std::time::Duration::from_secs(1),
