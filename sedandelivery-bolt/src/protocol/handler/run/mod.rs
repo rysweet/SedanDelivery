@@ -8,6 +8,7 @@
 //! - [`write_permit`]  — write-keyword detection and write-semaphore acquisition
 //! - [`response`]      — SUCCESS response construction from converted results
 //! - [`plan`]          — EXPLAIN handler (plan only, no execution)
+//! - [`pending_cap`]   — pending-results cap configuration
 
 use std::sync::Arc;
 
@@ -25,12 +26,14 @@ use super::{
 };
 
 mod admin;
+mod pending_cap;
 mod plan;
 mod preprocess;
 mod response;
 mod write_permit;
 
 use admin::{check_database_exists, intercept_admin_query};
+use pending_cap::max_pending_results;
 use plan::handle_explain;
 use preprocess::{
     detect_explain_profile, parse_use_database, parse_use_prefix, strip_cypher_prefix,
@@ -40,28 +43,6 @@ use write_permit::acquire_write_semaphore;
 
 #[cfg(test)]
 mod tests;
-
-// -- Pending-results cap -----------------------------------------------------
-
-const DEFAULT_MAX_PENDING_RESULTS: usize = 16;
-
-fn max_pending_results() -> usize {
-    static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CAP.get_or_init(|| {
-        std::env::var("BOLT_MAX_PENDING_RESULTS")
-            .ok()
-            .and_then(|v| match v.parse() {
-                Ok(val) => Some(val),
-                Err(_) => {
-                    tracing::warn!(
-                        "invalid value for BOLT_MAX_PENDING_RESULTS: {v:?}, using default {DEFAULT_MAX_PENDING_RESULTS}"
-                    );
-                    None
-                }
-            })
-            .unwrap_or(DEFAULT_MAX_PENDING_RESULTS)
-    })
-}
 
 // -- Store resolution --------------------------------------------------------
 
