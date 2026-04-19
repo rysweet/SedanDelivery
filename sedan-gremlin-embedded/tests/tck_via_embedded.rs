@@ -59,7 +59,12 @@ fn value_to_string(v: &Value) -> String {
 }
 
 fn single_int(result: &QueryResult, col: &str) -> i64 {
-    assert_eq!(result.rows.len(), 1, "expected single row, got {:?}", result.rows);
+    assert_eq!(
+        result.rows.len(),
+        1,
+        "expected single row, got {:?}",
+        result.rows
+    );
     match result.rows[0].get(col) {
         Some(Value::Int(n)) => *n,
         other => panic!("expected Int in column {col}, got {other:?}"),
@@ -109,8 +114,10 @@ fn tck_values_name_all_persons() {
     let r = run("g.V().hasLabel('person').values('name')");
     let col = r.columns[0].clone();
     let names: BTreeSet<String> = scalar_column_sorted(&r, &col).into_iter().collect();
-    let expected: BTreeSet<String> =
-        ["marko", "vadas", "josh", "peter"].iter().map(|s| s.to_string()).collect();
+    let expected: BTreeSet<String> = ["marko", "vadas", "josh", "peter"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(names, expected);
 }
 
@@ -119,8 +126,7 @@ fn tck_values_name_all_software() {
     let r = run("g.V().hasLabel('software').values('name')");
     let col = r.columns[0].clone();
     let names: BTreeSet<String> = scalar_column_sorted(&r, &col).into_iter().collect();
-    let expected: BTreeSet<String> =
-        ["lop", "ripple"].iter().map(|s| s.to_string()).collect();
+    let expected: BTreeSet<String> = ["lop", "ripple"].iter().map(|s| s.to_string()).collect();
     assert_eq!(names, expected);
 }
 
@@ -139,7 +145,10 @@ fn tck_in_created_to_lop() {
     let r = run("g.V().has('name','lop').in('created').values('name')");
     let col = r.columns[0].clone();
     let names = scalar_column_sorted(&r, &col);
-    assert_eq!(names, vec!["josh".to_string(), "marko".to_string(), "peter".to_string()]);
+    assert_eq!(
+        names,
+        vec!["josh".to_string(), "marko".to_string(), "peter".to_string()]
+    );
 }
 
 // ── Limit / Range ────────────────────────────────────────────────────────────
@@ -158,8 +167,7 @@ fn tck_dedup_software_names() {
     let r = run("g.V().hasLabel('person').out('created').values('name').dedup()");
     let col = r.columns[0].clone();
     let names: BTreeSet<String> = scalar_column_sorted(&r, &col).into_iter().collect();
-    let expected: BTreeSet<String> =
-        ["lop", "ripple"].iter().map(|s| s.to_string()).collect();
+    let expected: BTreeSet<String> = ["lop", "ripple"].iter().map(|s| s.to_string()).collect();
     assert_eq!(names, expected);
 }
 

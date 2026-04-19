@@ -55,8 +55,8 @@ impl FabricGraphStore {
         // serde_json::to_string on Vec<String> is infallible (no NaN, no
         // non-UTF8 keys possible), so an Err here would indicate a bug in
         // serde_json itself — propagating with .expect is correct.
-        let labels_json = serde_json::to_string(&labels)
-            .expect("Vec<String> serialization is infallible");
+        let labels_json =
+            serde_json::to_string(&labels).expect("Vec<String> serialization is infallible");
         self.statement(
             &format!("MATCH (n {{`{PROP_GRAPH}`: $graph, `{PROP_NODE_ID}`: $id}}) SET n.`{PROP_LABELS}` = $lbls"),
             json!({ "graph": graph, "id": id.0, "lbls": labels_json }),
@@ -350,8 +350,8 @@ impl GraphStore for FabricGraphStore {
         // See comment on the other call site — Vec<String> serialization
         // cannot fail; previously this silently wrote "[]" on an impossible
         // error, which would corrupt label data if it ever did fire.
-        let labels_json = serde_json::to_string(&labels)
-            .expect("Vec<String> serialization is infallible");
+        let labels_json =
+            serde_json::to_string(&labels).expect("Vec<String> serialization is infallible");
 
         let mut all_props: HashMap<String, JValue> = user_props_to_json(&properties);
         all_props.insert(PROP_GRAPH.into(), json!(graph));

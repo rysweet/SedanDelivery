@@ -145,7 +145,11 @@ fn seeded_engine() -> (SedanGql, InMemoryGraphStore) {
 fn tck_match_all_persons() {
     let (e, s) = seeded_engine();
     let r = e
-        .execute(&s as &dyn GraphStore, "g", "MATCH (n:Person) RETURN n.name AS name")
+        .execute(
+            &s as &dyn GraphStore,
+            "g",
+            "MATCH (n:Person) RETURN n.name AS name",
+        )
         .unwrap();
     assert_eq!(r.rows.len(), 3);
 }
@@ -176,7 +180,11 @@ fn tck_match_with_where_clause() {
 fn tck_count_aggregation() {
     let (e, s) = seeded_engine();
     let r = e
-        .execute(&s as &dyn GraphStore, "g", "MATCH (n:Person) RETURN count(n) AS c")
+        .execute(
+            &s as &dyn GraphStore,
+            "g",
+            "MATCH (n:Person) RETURN count(n) AS c",
+        )
         .unwrap();
     assert_eq!(r.rows[0].get("c"), Some(&Value::Int(3)));
 }
@@ -185,7 +193,11 @@ fn tck_count_aggregation() {
 fn tck_avg_aggregation() {
     let (e, s) = seeded_engine();
     let r = e
-        .execute(&s as &dyn GraphStore, "g", "MATCH (n:Person) RETURN avg(n.age) AS a")
+        .execute(
+            &s as &dyn GraphStore,
+            "g",
+            "MATCH (n:Person) RETURN avg(n.age) AS a",
+        )
         .unwrap();
     match r.rows[0].get("a") {
         // (30 + 25 + 40) / 3 == 31.666…
