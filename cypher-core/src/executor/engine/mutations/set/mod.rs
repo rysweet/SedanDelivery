@@ -1,13 +1,18 @@
 //! SET and REMOVE operator implementations.
-
-use indexmap::IndexMap;
+//!
+//! Submodules group logic by SET-clause variant:
+//! - [`property`] — `SET n.prop = v` and `REMOVE n.prop`
+//! - [`map`]      — `SET n = {..}` (replace) and `SET n += {..}` (merge)
+//! - [`labels`]   — `SET n:Label`, `SET n:$(expr)`, and `REMOVE n:Label`
 
 use crate::error::{ExecutionError, GqlError};
 use crate::planner::{Operator, RemoveItem, SetItem};
-use crate::types::Value;
 
-use crate::executor::engine::helpers::{extract_node_id, undefined_var};
 use crate::executor::engine::{ExecContext, MutationStats, QueryExecutor, Row};
+
+mod labels;
+mod map;
+mod property;
 
 impl<'a> QueryExecutor<'a> {
     pub(crate) fn exec_set(
@@ -56,43 +61,10 @@ impl<'a> QueryExecutor<'a> {
             for item in items {
                 match item {
                     RemoveItem::Property { alias, key } => {
-                        let val = row
-                            .get(alias.0.as_str())
-                            .ok_or_else(|| undefined_var(&alias.0))?;
-                        match val {
-                            Value::Null => {
-                                // REMOVE on null (from OPTIONAL MATCH) is a no-op
-                            }
-                            Value::Node(node_id) => {
-                                self.store.remove_node_property(cx.graph, *node_id, key)?;
-                            }
-                            Value::Edge(edge_id) => {
-                                self.store.remove_edge_property(cx.graph, *edge_id, key)?;
-                            }
-                            other => {
-                                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                                    expected: "Node or Relationship".to_string(),
-                                    actual: other.type_name().to_string(),
-                                }));
-                            }
-                        }
-                        // REMOVE property does not count as properties_set.
+                        self.apply_remove_property(cx.graph, &row, alias, key)?;
                     }
                     RemoveItem::Labels { alias, labels } => {
-                        let val = row
-                            .get(alias.0.as_str())
-                            .ok_or_else(|| undefined_var(&alias.0))?;
-                        // REMOVE labels on null (from OPTIONAL MATCH) is a no-op
-                        if val.is_null() {
-                            continue;
-                        }
-                        let node_id = extract_node_id(val, &alias.0)?;
-                        let label_strings: Vec<String> =
-                            labels.iter().map(|l| l.as_str().to_string()).collect();
-                        let removed_count = label_strings.len() as u64;
-                        self.store
-                            .remove_node_labels(cx.graph, node_id, &label_strings)?;
-                        cx.stats.labels_removed += removed_count;
+                        self.apply_remove_labels(cx.graph, &row, alias, labels, cx.stats)?;
                     }
                 }
             }
@@ -114,214 +86,18 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<(), GqlError> {
         match item {
             SetItem::Property { alias, key, value } => {
-                let val = row
-                    .get(alias.0.as_str())
-                    .ok_or_else(|| undefined_var(&alias.0))?;
-                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
-                if val.is_null() {
-                    return Ok(());
-                }
-                let ctx = self.build_filter_ctx(graph, row)?;
-                let prop_val = self.eval_with_storage(graph, value, row, &ctx)?;
-                let prop_val = if self.gremlin_mode {
-                    match prop_val {
-                        Value::Map(map) if map.contains_key("value") => {
-                            Value::List(vec![Value::Map(map)])
-                        }
-                        other => other,
-                    }
-                } else {
-                    prop_val
-                };
-                // SET n.prop = null means REMOVE the property (Cypher semantics)
-                if prop_val.is_null() {
-                    match val {
-                        Value::Node(node_id) => {
-                            self.store.remove_node_property(graph, *node_id, key)?;
-                        }
-                        Value::Edge(edge_id) => {
-                            self.store.remove_edge_property(graph, *edge_id, key)?;
-                        }
-                        _ => {
-                            tracing::debug!("SET property on non-node/non-edge value, ignoring");
-                        }
-                    }
-                    return Ok(());
-                }
-                // Validate that the property value is a valid property type.
-                // Lists-of-maps are not allowed, but standalone Maps are
-                // permitted (needed for Gremlin @AllowMapPropertyValues).
-                fn is_invalid_prop_value(v: &Value, gremlin_mode: bool) -> bool {
-                    match v {
-                        Value::List(items) => {
-                            if gremlin_mode
-                                && !items.is_empty()
-                                && items.iter().all(
-                                    |item| matches!(item, Value::Map(map) if map.contains_key("value")),
-                                )
-                            {
-                                false
-                            } else {
-                                items.iter().any(|item| matches!(item, Value::Map(_)))
-                            }
-                        }
-                        _ => false,
-                    }
-                }
-                if is_invalid_prop_value(&prop_val, self.gremlin_mode) {
-                    return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                        expected: "primitive property value (not Map or List of Maps)".to_string(),
-                        actual: prop_val.type_name().to_string(),
-                    }));
-                }
-                let mut props = IndexMap::new();
-                props.insert(key.clone(), prop_val);
-                match val {
-                    Value::Node(node_id) => {
-                        self.store.set_node_properties(graph, *node_id, props)?;
-                        stats.props_seen.insert((false, node_id.0, key.clone()));
-                    }
-                    Value::Edge(edge_id) => {
-                        self.store.set_edge_properties(graph, *edge_id, props)?;
-                        stats.props_seen.insert((true, edge_id.0, key.clone()));
-                    }
-                    other => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: format!("Node or Relationship for variable '{}'", alias.0),
-                            actual: other.type_name().to_string(),
-                        }));
-                    }
-                }
+                self.apply_set_property(graph, row, alias, key, value, stats)
             }
             SetItem::Map { alias, map, merge } => {
-                let val = row
-                    .get(alias.0.as_str())
-                    .ok_or_else(|| undefined_var(&alias.0))?;
-                // SET on a null variable (from OPTIONAL MATCH) is silently ignored.
-                if val.is_null() {
-                    return Ok(());
-                }
-                let ctx = self.build_filter_ctx(graph, row)?;
-                let map_val = self.eval_with_storage(graph, map, row, &ctx)?;
-                let props = match map_val {
-                    Value::Map(m) => m
-                        .into_iter()
-                        .map(|(k, v)| (k.to_string(), v))
-                        .collect::<IndexMap<String, Value>>(),
-                    Value::Null => IndexMap::new(),
-                    Value::Node(src_node_id) => {
-                        // SET a = b where b is a Node: copy all properties from b
-                        match self.store.get_node(graph, src_node_id)? {
-                            Some(node_data) => node_data.properties,
-                            None => IndexMap::new(),
-                        }
-                    }
-                    Value::Edge(src_edge_id) => {
-                        // SET r = r2 where r2 is a Relationship: copy all properties from r2
-                        match self.store.get_edge(graph, src_edge_id)? {
-                            Some(edge_data) => edge_data.properties,
-                            None => IndexMap::new(),
-                        }
-                    }
-                    other => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "Map for SET assignment".to_string(),
-                            actual: other.type_name().to_string(),
-                        }));
-                    }
-                };
-                let non_null_keys: Vec<String> = props
-                    .iter()
-                    .filter(|(_, v)| !v.is_null())
-                    .map(|(k, _)| k.clone())
-                    .collect();
-                let (is_edge, raw_id) = match val {
-                    Value::Node(node_id) => {
-                        let id = *node_id;
-                        if *merge {
-                            self.store.set_node_properties(graph, id, props)?;
-                        } else {
-                            self.store.replace_node_properties(graph, id, props)?;
-                        }
-                        (false, id.0)
-                    }
-                    Value::Edge(edge_id) => {
-                        let id = *edge_id;
-                        if *merge {
-                            self.store.set_edge_properties(graph, id, props)?;
-                        } else {
-                            self.store.replace_edge_properties(graph, id, props)?;
-                        }
-                        (true, id.0)
-                    }
-                    other => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: format!("Node or Relationship for variable '{}'", alias.0),
-                            actual: other.type_name().to_string(),
-                        }));
-                    }
-                };
-                for k in non_null_keys {
-                    stats.props_seen.insert((is_edge, raw_id, k));
-                }
+                self.apply_set_map(graph, row, alias, map, *merge, stats)
             }
             SetItem::Labels { alias, labels } => {
-                let val = row
-                    .get(alias.0.as_str())
-                    .ok_or_else(|| undefined_var(&alias.0))?;
-                // SET labels on null (from OPTIONAL MATCH) is a no-op
-                if val.is_null() {
-                    return Ok(());
-                }
-                let node_id = extract_node_id(val, &alias.0)?;
-                let label_strings: Vec<String> =
-                    labels.iter().map(|l| l.as_str().to_string()).collect();
-                self.store.add_node_labels(graph, node_id, &label_strings)?;
-                stats.labels_seen.extend(label_strings);
+                self.apply_set_labels(graph, row, alias, labels, stats)
             }
             SetItem::DynamicLabels { alias, value } => {
-                let val = row
-                    .get(alias.0.as_str())
-                    .ok_or_else(|| undefined_var(&alias.0))?;
-                if val.is_null() {
-                    return Ok(());
-                }
-                let node_id = extract_node_id(val, &alias.0)?;
-                let ctx = self.build_filter_ctx(graph, row)?;
-                let label_val = self.eval_with_storage(graph, value, row, &ctx)?;
-                let label_strings: Vec<String> = match label_val {
-                    Value::Null => Vec::new(),
-                    Value::Str(label) => vec![label.into_string()],
-                    Value::List(items) => {
-                        let mut labels = Vec::with_capacity(items.len());
-                        for item in items {
-                            match item {
-                                Value::Str(label) => labels.push(label.into_string()),
-                                other => {
-                                    return Err(GqlError::Execution(
-                                        ExecutionError::TypeMismatch {
-                                            expected: "String or List<String> for dynamic labels"
-                                                .to_string(),
-                                            actual: other.type_name().to_string(),
-                                        },
-                                    ));
-                                }
-                            }
-                        }
-                        labels
-                    }
-                    other => {
-                        return Err(GqlError::Execution(ExecutionError::TypeMismatch {
-                            expected: "String or List<String> for dynamic labels".to_string(),
-                            actual: other.type_name().to_string(),
-                        }));
-                    }
-                };
-                self.store.add_node_labels(graph, node_id, &label_strings)?;
-                stats.labels_seen.extend(label_strings);
+                self.apply_set_dynamic_labels(graph, row, alias, value, stats)
             }
         }
-        Ok(())
     }
 }
 
@@ -332,6 +108,8 @@ mod tests {
     use crate::executor::budget::ExecutionBudget;
     use crate::planner::{Operator, RemoveItem, SetItem};
     use crate::storage::{GraphStore, InMemoryGraphStore};
+    use crate::types::Value;
+    use indexmap::IndexMap;
 
     fn make_store() -> InMemoryGraphStore {
         let store = InMemoryGraphStore::new();
@@ -403,7 +181,6 @@ mod tests {
     #[test]
     fn set_null_propagates_removal_error() {
         let store = make_store();
-        // Create and then delete a node so the NodeId becomes stale.
         let nid = store
             .create_node("g", vec!["P".to_string()], IndexMap::new())
             .unwrap();
@@ -414,8 +191,6 @@ mod tests {
         row.insert("n".to_string(), Value::Node(nid));
         let mut stats = MutationStats::default();
 
-        // SET n.prop = null should attempt remove_node_property on a
-        // non-existent node and propagate the StorageError.
         let item = SetItem::Property {
             alias: Identifier::new("n"),
             key: "prop".to_string(),
@@ -626,7 +401,6 @@ mod tests {
             key: "x".to_string(),
             value: Expr::Integer(1),
         };
-        // Should succeed silently (no-op)
         executor
             .apply_set_item("g", &row, &item, &mut stats)
             .unwrap();
