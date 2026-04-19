@@ -44,3 +44,73 @@ pub(super) fn duration_property(d: &CypherDuration, key: &str) -> Result<Value, 
         _ => Ok(Value::Null),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::temporal_property_access;
+    use crate::types::{CypherDuration, Value};
+
+    #[test]
+    fn dur_props() {
+        let d = Value::Duration(CypherDuration {
+            months: 27,
+            days: 17,
+            nanos: 3_723_456_789_012,
+        });
+        assert_eq!(
+            temporal_property_access(&d, "years").unwrap(),
+            Value::Int(2)
+        );
+        assert_eq!(
+            temporal_property_access(&d, "weeks").unwrap(),
+            Value::Int(2)
+        );
+    }
+
+    #[test]
+    fn duration_all_keys() {
+        let d = Value::Duration(CypherDuration {
+            months: 27,
+            days: 17,
+            nanos: 3_723_456_789_012,
+        });
+        for k in [
+            "years",
+            "months",
+            "quarters",
+            "quartersOfYear",
+            "monthsOfYear",
+            "monthsOfQuarter",
+            "weeks",
+            "days",
+            "daysOfWeek",
+            "hours",
+            "minutes",
+            "minutesOfHour",
+            "seconds",
+            "secondsOfMinute",
+            "milliseconds",
+            "millisecondsOfSecond",
+            "microseconds",
+            "microsecondsOfSecond",
+            "nanoseconds",
+            "nanosecondsOfSecond",
+        ] {
+            assert!(matches!(
+                temporal_property_access(&d, k).unwrap(),
+                Value::Int(_)
+            ));
+        }
+        assert_eq!(temporal_property_access(&d, "nope").unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn duration_nanos_overflow_errs() {
+        let d = Value::Duration(CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: i128::MAX,
+        });
+        assert!(temporal_property_access(&d, "nanoseconds").is_err());
+    }
+}

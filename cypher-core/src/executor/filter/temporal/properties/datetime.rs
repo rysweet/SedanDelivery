@@ -89,3 +89,79 @@ fn timezone_label(zdt: &jiff::Zoned) -> String {
         offset_label(zdt)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::temporal_property_access;
+    use crate::types::Value;
+
+    fn dt_utc(y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8) -> Value {
+        let z = jiff::civil::DateTime::new(y, mo, d, h, mi, s, 0)
+            .unwrap()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .unwrap();
+        Value::DateTime(Box::new(z))
+    }
+
+    #[test]
+    fn datetime_all_keys() {
+        let z = dt_utc(2024, 4, 15, 10, 30, 45);
+        for k in [
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "millisecond",
+            "microsecond",
+            "nanosecond",
+            "week",
+            "weekYear",
+            "dayOfWeek",
+            "weekDay",
+            "dayOfYear",
+            "ordinalDay",
+            "quarter",
+            "dayOfQuarter",
+            "offsetMinutes",
+            "offsetSeconds",
+            "epochMillis",
+            "epochSeconds",
+        ] {
+            assert!(matches!(
+                temporal_property_access(&z, k).unwrap(),
+                Value::Int(_)
+            ));
+        }
+        for k in ["timezone", "offset"] {
+            assert!(matches!(
+                temporal_property_access(&z, k).unwrap(),
+                Value::Str(_)
+            ));
+        }
+        assert_eq!(temporal_property_access(&z, "nope").unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn datetime_with_named_iana_timezone() {
+        let z: jiff::Zoned = "2024-01-01T00:00:00+00:00[Europe/London]".parse().unwrap();
+        let v = Value::DateTime(Box::new(z));
+        if let Value::Str(s) = temporal_property_access(&v, "timezone").unwrap() {
+            assert_eq!(&*s, "Europe/London");
+        } else {
+            panic!()
+        }
+    }
+
+    #[test]
+    fn datetime_with_factory_timezone_returns_offset() {
+        let z: jiff::Zoned = "1970-01-01T00:00:00-00:00[Factory]".parse().unwrap();
+        let v = Value::DateTime(Box::new(z));
+        if let Value::Str(s) = temporal_property_access(&v, "timezone").unwrap() {
+            assert!(s.starts_with('+') || s.starts_with('-'));
+        } else {
+            panic!()
+        }
+    }
+}

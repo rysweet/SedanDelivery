@@ -46,3 +46,43 @@ pub(super) fn local_datetime_property(
         _ => Ok(Value::Null),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::temporal_property_access;
+    use crate::types::Value;
+
+    fn ldt(y: i16, mo: i8, d: i8, h: i8, mi: i8, s: i8, ns: i32) -> Value {
+        Value::LocalDateTime(jiff::civil::DateTime::new(y, mo, d, h, mi, s, ns).unwrap())
+    }
+
+    #[test]
+    fn localdatetime_all_keys() {
+        let l = ldt(2024, 4, 15, 10, 30, 45, 123_456_789);
+        for k in [
+            "year",
+            "month",
+            "day",
+            "hour",
+            "minute",
+            "second",
+            "millisecond",
+            "microsecond",
+            "nanosecond",
+            "week",
+            "weekYear",
+            "dayOfWeek",
+            "weekDay",
+            "dayOfYear",
+            "ordinalDay",
+            "quarter",
+            "dayOfQuarter",
+        ] {
+            assert!(matches!(
+                temporal_property_access(&l, k).unwrap(),
+                Value::Int(_)
+            ));
+        }
+        assert_eq!(temporal_property_access(&l, "nope").unwrap(), Value::Null);
+    }
+}

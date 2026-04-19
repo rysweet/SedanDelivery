@@ -48,3 +48,98 @@ pub(crate) fn time_to_utc_nanos(t: &jiff::civil::Time, offset_secs: i32) -> i64 
         + t.subsec_nanosecond() as i64;
     local_nanos - offset_secs as i64 * 1_000_000_000
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::temporal_property_access;
+    use super::time_to_utc_nanos;
+    use crate::types::Value;
+
+    #[test]
+    fn localtime_props() {
+        let t = Value::LocalTime(jiff::civil::Time::new(10, 30, 45, 123_456_789).unwrap());
+        assert_eq!(
+            temporal_property_access(&t, "hour").unwrap(),
+            Value::Int(10)
+        );
+        assert_eq!(
+            temporal_property_access(&t, "nanosecond").unwrap(),
+            Value::Int(123456789)
+        );
+    }
+
+    #[test]
+    fn time_offset() {
+        let t = Value::Time(jiff::civil::Time::new(10, 30, 0, 0).unwrap(), 3600);
+        assert_eq!(
+            temporal_property_access(&t, "offset").unwrap(),
+            Value::Str("+01:00".into())
+        );
+    }
+
+    #[test]
+    fn localtime_all_keys() {
+        let t = Value::LocalTime(jiff::civil::Time::new(10, 30, 45, 123_456_789).unwrap());
+        for k in [
+            "hour",
+            "minute",
+            "second",
+            "millisecond",
+            "microsecond",
+            "nanosecond",
+        ] {
+            assert!(matches!(
+                temporal_property_access(&t, k).unwrap(),
+                Value::Int(_)
+            ));
+        }
+        assert_eq!(
+            temporal_property_access(&t, "unknown").unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn time_all_keys() {
+        let t = Value::Time(jiff::civil::Time::new(10, 30, 0, 0).unwrap(), 3600);
+        for k in [
+            "hour",
+            "minute",
+            "second",
+            "millisecond",
+            "microsecond",
+            "nanosecond",
+            "offset",
+            "offsetMinutes",
+            "offsetSeconds",
+            "timezone",
+        ] {
+            let _ = temporal_property_access(&t, k).unwrap();
+        }
+        assert_eq!(temporal_property_access(&t, "nope").unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn utc_nanos_no_offset() {
+        assert_eq!(
+            time_to_utc_nanos(&jiff::civil::Time::new(0, 0, 0, 0).unwrap(), 0),
+            0
+        );
+    }
+
+    #[test]
+    fn utc_nanos_positive() {
+        assert_eq!(
+            time_to_utc_nanos(&jiff::civil::Time::new(12, 0, 0, 0).unwrap(), 3600),
+            11 * 3_600_000_000_000
+        );
+    }
+
+    #[test]
+    fn utc_nanos_negative() {
+        assert_eq!(
+            time_to_utc_nanos(&jiff::civil::Time::new(12, 0, 0, 0).unwrap(), -5 * 3600),
+            17 * 3_600_000_000_000
+        );
+    }
+}
