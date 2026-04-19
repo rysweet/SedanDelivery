@@ -60,7 +60,25 @@ const NODES_SRC: &str = concat!(
 );
 const EDGES_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/writes/edges.rs"));
 const GRAPHS_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/writes/graphs.rs"));
-const READS_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads.rs"));
+const READS_SRC: &str = concat!(
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/mod.rs")),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/helpers.rs")),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/labels.rs")),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/reads/entities.rs"
+    )),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/indices.rs")),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/reads/adjacency.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/reads/enumeration.rs"
+    )),
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/admin.rs")),
+);
 
 fn strip_line_comments(source: &str) -> String {
     let mut cleaned = String::with_capacity(source.len());
