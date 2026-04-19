@@ -4,27 +4,21 @@ Baseline line-coverage for the core/embedded Rust crates, measured with
 [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) using each
 crate's `--lib` unit tests.
 
-## Baseline (2026-04-19, refreshed post-#1357, then post-cypher-core push past 75%)
+## Baseline (refreshed post cypher-core push to 78%)
 
-Refreshed against `main` after the recent test-coverage waves landed:
-PR #1336 established the initial baseline; #1345 refreshed it after the
-`cypher-core/src/executor/filter/mod.rs` decomposition; #1353 added a
-large `gremlin-core::text_parser` test suite; #1355 added compiler-step
-tests (`strings.rs`, `by.rs`, `filter.rs`, etc.); and #1357 decomposed
-`cypher-core/src/executor/engine/eval.rs` into the `eval/` submodule and
-added accompanying eval tests. The current PR pushed `cypher-core` from
-69.70% to 75.39% by including the existing integration test files
-(`tests/coverage_*`, `tests/end_to_end.rs`, `tests/data_integrity.rs`,
-`tests/cypher_language_completeness.rs`, `tests/persistence.rs`,
-`tests/adversarial.rs`, `tests/stress.rs`, `tests/exists_interactive.rs`,
-`tests/issue_*.rs`, `tests/ldbc/`) as `--lib` tests via `#[path]`
-re-mounting plus `extern crate self as cypher_core;`, and added a focused
-`coverage_targeted_tests.rs` module for parser/builtin/temporal/element
-function corners.
+Refreshed against `main` after the cypher-core coverage push past 78%:
+the current PR added five `coverage_targeted_tests{5,6,7,8,9}.rs` modules
+(~390 new tests) targeting the lowest-covered cypher-core modules
+exercising the parse → plan → execute pipeline plus direct `Operator`
+construction. cypher-core moved from **75.34% → 78.12%** (+2.78pt).
+A residual gap remains in Gremlin-only executor modules
+(`executor/engine/gremlin/*`, `executor/engine/eval/gremlin_*_funcs.rs`,
+~3300 lines at 0% from cypher tests) which require Gremlin-side
+integration tests to exercise.
 
 | Crate                     |   Line% | Function% | Files tested | Target |
 | ------------------------- | ------: | --------: | -----------: | -----: |
-| `cypher-core`             | **75.39%** |    77.54% |          106 |    70% |
+| `cypher-core`             | **78.12%** |    78.12% |          ~110 |    70% |
 | `gql-engine`              | **99.36%** |   100.00% |            5 |    70% |
 | `gremlin-core`            | **79.20%** |    88.36% |           40 |    70% |
 | `sedan-cypher-embedded`   | **100.00%** |   100.00% |            1 |    70% |
