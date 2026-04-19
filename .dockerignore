@@ -3,6 +3,7 @@
 target
 docs
 scripts
+!scripts/generate-cargo-stubs.sh
 tests
 !tests/loadtest/Cargo.toml
 !tests/gremlin-tck/Cargo.toml

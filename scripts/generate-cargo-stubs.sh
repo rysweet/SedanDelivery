@@ -35,7 +35,7 @@ set -euo pipefail
 members=$(awk '
     /^\[workspace\]/         { in_ws=1; next }
     in_ws && /^\[/           { in_ws=0 }
-    in_ws && /^members\s*=/  { in_members=1; sub(/^[^=]*=\s*\[/, "") }
+    in_ws && /^members[[:space:]]*=/  { in_members=1; sub(/^[^=]*=[[:space:]]*\[/, "") }
     in_members {
         # extract any quoted strings on this line
         while (match($0, /"[^"]+"/)) {
@@ -92,7 +92,7 @@ for member in $members; do
         }
         /^\[\[bin\]\]/ { flush(); in_bin=1; path="src/main.rs"; next }
         in_bin && /^\[/ { flush(); next }
-        in_bin && /^path\s*=/ { gsub(/[ "=]/, ""); sub(/^path/, ""); path=$0 }
+        in_bin && /^path[[:space:]]*=/ { gsub(/[ "=]/, ""); sub(/^path/, ""); path=$0 }
         END { flush() }
     ' "$member/Cargo.toml")
 
@@ -125,8 +125,8 @@ for member in $members; do
         }
         /^\[\[bench\]\]/ { flush(); in_bench=1; next }
         in_bench && /^\[/ { flush(); next }
-        in_bench && /^name\s*=/ { gsub(/[ "=]/, ""); sub(/^name/, ""); name=$0 }
-        in_bench && /^path\s*=/ { gsub(/[ "=]/, ""); sub(/^path/, ""); path=$0 }
+        in_bench && /^name[[:space:]]*=/ { gsub(/[ "=]/, ""); sub(/^name/, ""); name=$0 }
+        in_bench && /^path[[:space:]]*=/ { gsub(/[ "=]/, ""); sub(/^path/, ""); path=$0 }
         END { flush() }
     ' "$member/Cargo.toml")
 
