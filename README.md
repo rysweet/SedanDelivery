@@ -71,6 +71,41 @@ gh pr edit --add-label deploy
 A bot comment will post the Redis/Bolt endpoints plus the Bolt password retrieval
 command when the deployment completes (~8 minutes).
 
+## Embed in your Rust app (no server needed)
+
+SedanDelivery's three query engines also ship as ordinary Rust crates so you
+can run graph queries entirely in-process — no Redis, no Bolt, no network.
+Pick the language that fits your team:
+
+```toml
+# Cargo.toml — pick one
+sedan-cypher-embedded  = { git = "https://github.com/cloud-ecosystem-security/SedanDelivery" }  # openCypher
+sedan-gql-embedded     = { git = "https://github.com/cloud-ecosystem-security/SedanDelivery" }  # GQL (ISO/IEC 39075)
+sedan-gremlin-embedded = { git = "https://github.com/cloud-ecosystem-security/SedanDelivery" }  # Apache TinkerPop Gremlin
+```
+
+```rust
+use sedan_cypher_embedded::{CypherEngine, GraphStore, InMemoryGraphStore};
+
+let engine = CypherEngine::new();
+let store = InMemoryGraphStore::default();
+store.create_graph("g").unwrap();
+engine.execute(&store, "g", "CREATE (:Person {name: 'Alice'})").unwrap();
+let r = engine.execute(&store, "g", "MATCH (p:Person) RETURN p.name").unwrap();
+```
+
+Try the canonical three-engine demo:
+
+```bash
+cargo run -p embedded_quickstart
+```
+
+See **[docs/EMBEDDED_GUIDE.md](docs/EMBEDDED_GUIDE.md)** for the full guide:
+quick starts for each engine, storage backend choices (in-memory / WAL /
+Redis / Fabric), `ExecutionBudget` configuration, parameter binding,
+concurrency patterns (`Arc<Engine>` + `Arc<Store>`), performance tips, and a
+side-by-side cypher ↔ gql ↔ gremlin migration table.
+
 ## Connect via Bolt protocol (recommended)
 
 Standard Neo4j drivers connect directly — no custom SDK needed:

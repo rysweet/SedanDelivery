@@ -1194,6 +1194,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded_quickstart"
+version = "0.1.0"
+dependencies = [
+ "indexmap",
+ "sedan-cypher-embedded",
+ "sedan-gql-embedded",
+ "sedan-gremlin-embedded",
+]
+
+[[package]]
 name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

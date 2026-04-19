@@ -1,0 +1,13 @@
+[package]
+name        = "embedded_quickstart"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+publish     = false
+description = "Tiny end-to-end demo of the SedanDelivery embedded engines (cypher, gql, gremlin)."
+
+[dependencies]
+sedan-cypher-embedded  = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded     = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+indexmap               = { workspace = true }
