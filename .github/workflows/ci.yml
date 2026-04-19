@@ -229,6 +229,18 @@ jobs:
         # against the embedded crate drifting from the underlying engine.
         run: cargo test -p sedan-cypher-embedded --test tck_via_embedded
 
+      - name: Run Gremlin TCK via embedded crate (sedan-gremlin-embedded)
+        # Proves sedan-gremlin-embedded::GremlinEngine's public API is fully
+        # equivalent to the underlying gremlin-core + cypher-core pipeline
+        # against the canonical TinkerPop "modern" graph fixture.
+        run: cargo test -p sedan-gremlin-embedded --test tck_via_embedded
+
+      - name: Run GQL conformance via embedded crate (sedan-gql-embedded)
+        # Proves sedan-gql-embedded::SedanGql's public API matches the raw
+        # gql-engine pipeline (and, for shared syntax, sedan-cypher-embedded)
+        # across the conformance scenarios mirrored from the openCypher TCK.
+        run: cargo test -p sedan-gql-embedded --test tck_via_embedded
+
       - name: Run stress tests
         run: cargo test -p cypher-core --test stress
 

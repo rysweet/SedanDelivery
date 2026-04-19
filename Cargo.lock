@@ -3753,6 +3753,7 @@ dependencies = [
  "criterion",
  "cypher-core",
  "gremlin-core",
+ "gremlin-tck",
  "indexmap",
  "thiserror 2.0.18",
 ]
