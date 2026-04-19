@@ -177,53 +177,65 @@ fn recovery_torn_tail_does_not_panic_and_preserves_full_records() {
     let torn_len = fs::metadata(&wal_path).unwrap().len();
     assert!(torn_len > prefix_end, "torn tail should extend the WAL");
 
-    // Phase 2: re-open. We assert two things:
-    //   (a) The process MUST NOT panic. `open()` returns a Result.
-    //   (b) Either:
-    //         (b1) recovery succeeds and exposes ALL fully-committed records
-    //              (the prefix), with no spurious extras; OR
-    //         (b2) recovery surfaces a clean StorageError without panicking.
-    //
-    // The current implementation takes path (b2): a malformed final line
-    // causes `replay_file` to return a serialization error. This is safe
-    // (no data loss on disk, no panic) but is suboptimal. See
-    // `docs/recovery_contract.md` and the JIT issue for the follow-up to
-    // implement true torn-tail tolerance (path b1).
-    let result = PersistentGraphStore::open(cfg(dir.path()));
-    match result {
-        Ok(store) => {
-            // Path (b1): tolerant recovery. All N committed nodes must be
-            // present and no extras.
-            let stats = store.graph_stats("g").unwrap();
-            assert_eq!(
-                stats.node_count, N as u64,
-                "torn-tail recovery exposed wrong node count"
-            );
-            for i in 0..N {
-                let n = store
-                    .get_node("g", NodeId(i as u64 + 1))
-                    .unwrap()
-                    .expect("committed node missing");
-                assert_eq!(n.properties["idx"], Value::Int(i));
-            }
-        }
-        Err(e) => {
-            // Path (b2): clean error. Verify the on-disk prefix is intact
-            // so a future tolerant recovery could still read it.
-            let msg = format!("{e}");
-            assert!(
-                msg.to_lowercase().contains("wal")
-                    || msg.to_lowercase().contains("parse")
-                    || msg.to_lowercase().contains("serial"),
-                "expected WAL-related error, got: {msg}"
-            );
-            let on_disk = fs::read(&wal_path).unwrap();
-            assert!(
-                on_disk.len() as u64 >= prefix_end,
-                "torn-tail open must not destroy the committed prefix"
-            );
-        }
+    // Phase 2: re-open. The store MUST tolerate the torn tail:
+    //   * `open()` succeeds.
+    //   * All N fully-committed records are visible.
+    //   * The on-disk WAL has been truncated back to the last clean record
+    //     boundary (the prefix end) so subsequent appends start aligned.
+    let store = PersistentGraphStore::open(cfg(dir.path())).expect("open must tolerate torn tail");
+    let stats = store.graph_stats("g").unwrap();
+    assert_eq!(
+        stats.node_count, N as u64,
+        "torn-tail recovery exposed wrong node count"
+    );
+    for i in 0..N {
+        let n = store
+            .get_node("g", NodeId(i as u64 + 1))
+            .unwrap()
+            .expect("committed node missing");
+        assert_eq!(n.properties["idx"], Value::Int(i));
     }
+    drop(store);
+
+    let on_disk_len = fs::metadata(&wal_path).unwrap().len();
+    assert_eq!(
+        on_disk_len, prefix_end,
+        "torn-tail open must truncate WAL to last clean record boundary \
+         (expected {prefix_end}, got {on_disk_len})"
+    );
+}
+
+/// A complete, newline-terminated WAL line that contains invalid JSON is real
+/// corruption (not a torn write) and `open()` MUST surface it as an error
+/// rather than silently dropping the record.
+#[test]
+fn recovery_complete_but_corrupt_line_returns_error() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Phase 1: commit a few entries.
+    {
+        let store = PersistentGraphStore::open(cfg(dir.path())).unwrap();
+        store.create_graph("g").unwrap();
+        write_n(&store, "g", 3);
+    }
+
+    // Append a line that is fully terminated (\n) but is invalid JSON. This
+    // is NOT a torn write — it's a fully-committed corrupt record.
+    let wal_path = dir.path().join("wal.jsonl");
+    {
+        let mut f = fs::OpenOptions::new().append(true).open(&wal_path).unwrap();
+        f.write_all(b"{\"op\":\"CreateNode\",\"graph\":\"g\",\"labels\":[\"X\"\n")
+            .unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let result = PersistentGraphStore::open(cfg(dir.path()));
+    let err = result.expect_err("open must reject newline-terminated corrupt lines");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("parse") || msg.contains("serial") || msg.contains("wal"),
+        "expected WAL/serialization error, got: {err}"
+    );
 }
 
 #[test]

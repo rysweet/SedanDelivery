@@ -105,10 +105,10 @@ impl PersistentGraphStore {
             replay::replay_file(&inner, &snapshot_path)?;
         }
 
-        // 2. Replay WAL
+        // 2. Replay WAL (tolerant of a torn trailing record from crash mid-fsync)
         let wal_path = config.data_dir.join("wal.jsonl");
         if wal_path.exists() {
-            replay::replay_file(&inner, &wal_path)?;
+            replay::replay_wal_file(&inner, &wal_path)?;
         }
 
         // 3. Open WAL for append
