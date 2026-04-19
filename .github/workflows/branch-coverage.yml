@@ -1,0 +1,52 @@
+name: Branch Coverage
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel in-progress runs on the same ref
+concurrency:
+  group: branch-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch-coverage:
+    name: Branch Coverage Floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+
+      - name: Install Rust nightly + llvm-tools-preview
+        # cargo-llvm-cov --branch is unstable and requires nightly + the
+        # nightly llvm-tools-preview component. See docs/COVERAGE.md.
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup component add llvm-tools-preview --toolchain nightly
+          # cargo-llvm-cov binary itself is toolchain-agnostic; install via stable.
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Install libclang (required by sd2-redis-module bindgen)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Branch coverage floor check
+        # Per-crate branch% floor enforcement against the values recorded in
+        # docs/COVERAGE.md "Branch-coverage baseline". Allows a 1pt tolerance
+        # for measurement noise; fails the job if any tracked crate drops
+        # below floor − tolerance.
+        run: bash scripts/branch_coverage_floor_check.sh
+        env:
+          BRANCH_COV_TOOLCHAIN: nightly
+
+      - name: Upload branch-coverage JSON reports
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: branch-coverage-reports
+          path: target/llvm-cov-branch-reports/

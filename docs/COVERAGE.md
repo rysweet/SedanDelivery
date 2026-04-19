@@ -162,3 +162,82 @@ The floor enforced today is the **current measured value**, not 70%.
 This avoids a flag-day regression while still preventing any future
 change from silently moving coverage backwards. A separate ratchet
 PR is expected to raise individual floors as crates reach 70%.
+
+## Branch coverage
+
+Line coverage answers "did this line execute at least once?" but is silent on
+whether every conditional branch was taken. A line such as
+`if a && b.is_ok() { ... } else { ... }` shows as covered as soon as it runs
+once, even if the `else` arm or the short-circuit-on-`false` case never
+fires. Branch coverage closes that blind spot by counting each LLVM-emitted
+branch edge separately.
+
+### Toolchain
+
+`cargo-llvm-cov`'s `--branch` flag is **unstable** and requires:
+
+- The **nightly** Rust toolchain (`rustup toolchain install nightly`).
+- The nightly `llvm-tools-preview` component
+  (`rustup component add llvm-tools-preview --toolchain nightly`).
+- `cargo-llvm-cov` itself (same binary as line coverage; reused).
+
+Invocation:
+
+```bash
+rustup run nightly cargo llvm-cov -p <crate> --lib --branch \
+  --json --output-path target/llvm-cov-branch/<crate>.json
+```
+
+For `cypher-core` use `--lib --tests` (matches `coverage_floor_check.sh`)
+to include the Gremlin-bridge integration suite.
+
+The `branches.percent` / `branches.count` / `branches.covered` fields appear
+in the JSON `data[0].totals` block alongside the existing `lines` block.
+
+### Branch-coverage baseline
+
+Measured against `main` at the introduction of
+`scripts/branch_coverage_floor_check.sh`. These are the **current truth**,
+not aspirational targets — they exist to prevent silent regression.
+
+| Crate                     |  Branch% |  Covered/Total | Floor |
+| ------------------------- | -------: | -------------: | ----: |
+| `cypher-core`             |  60.98%  |   3,405 / 5,584 |  60.0 |
+| `gremlin-core`            |  57.83%  |   1,300 / 2,248 |  57.0 |
+| `gql-engine`              |  81.67%  |       147 / 180 |  81.0 |
+| `sedan-cypher-embedded`   | 100.00%  |          2 / 2  | 100.0 |
+| `sedan-gql-embedded`      |    n/a   |          0 / 0  |   0.0 |
+| `sedan-gremlin-embedded`  |    n/a   |          0 / 0  |   0.0 |
+
+The two embedded shells (`sedan-gql-embedded`, `sedan-gremlin-embedded`) are
+thin re-export wrappers whose `--lib` test suites currently exercise no
+branching code paths — LLVM emits zero branch regions. The floor script
+treats `count == 0` as PASS but keeps the row so we notice if branches
+later start being instrumented (at which point we should ratchet the floor
+up to whatever is measured).
+
+The line/branch gap on `cypher-core` (82% vs 61%) and `gremlin-core`
+(80% vs 58%) is the expected magnitude: both crates contain large
+match-on-AST executors and option/result short-circuit chains that line
+coverage flatters. The gap is a useful map of where targeted tests will
+move the needle most.
+
+### Running branch coverage locally
+
+```bash
+# Single crate
+rustup run nightly cargo llvm-cov -p cypher-core --lib --tests --branch \
+  --summary-only
+
+# All tracked crates + floor enforcement
+bash scripts/branch_coverage_floor_check.sh
+```
+
+### CI integration
+
+`scripts/branch_coverage_floor_check.sh` runs in the
+`branch-coverage` job (`.github/workflows/branch-coverage.yml`) on every PR.
+The script is structurally identical to `coverage_floor_check.sh` but uses
+`--branch` on the nightly toolchain and parses `branches.percent` instead
+of `lines.percent`. A 1.0pt tolerance for measurement noise mirrors the
+line-coverage gate.
