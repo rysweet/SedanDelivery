@@ -319,6 +319,74 @@ mod tests {
     }
 
     #[test]
+    fn execute_compiled_with_budget_direct() {
+        use std::time::Duration;
+
+        let engine = GremlinEngine::new();
+        let store = test_store();
+        seed_graph(&store);
+
+        let query = engine.compile("g.V().count()").unwrap();
+        let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+        let result = engine
+            .execute_compiled_with_budget(&store, "test", &query, &mut budget)
+            .unwrap();
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn default_engine_works() {
+        let engine = GremlinEngine::default();
+        let store = test_store();
+        seed_graph(&store);
+
+        let result = engine.execute(&store, "test", "g.V().count()").unwrap();
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn parse_error_variant() {
+        let engine = GremlinEngine::new();
+        let err = engine
+            .compile("???not gremlin???")
+            .err()
+            .expect("expected parse error");
+        assert!(matches!(err, GremlinError::Parse(_)));
+        let _ = format!("{err}");
+        let _ = format!("{err:?}");
+    }
+
+    #[test]
+    fn execution_error_variant() {
+        let engine = GremlinEngine::new();
+        let store = InMemoryGraphStore::default();
+        // Don't create the graph -> execution fails
+        let err = engine
+            .execute(&store, "missing_graph", "g.V().count()")
+            .unwrap_err();
+        assert!(matches!(err, GremlinError::Execution(_)));
+        let _ = format!("{err}");
+    }
+
+    #[test]
+    fn compile_error_display() {
+        let engine = GremlinEngine::new();
+        let err = engine
+            .compile("bad.query()")
+            .err()
+            .expect("expected compile error");
+        let _ = format!("{err}");
+        let _ = format!("{err:?}");
+    }
+
+    #[test]
+    fn prelude_reexports_compile() {
+        use crate::prelude::*;
+        let _engine: GremlinEngine = GremlinEngine::default();
+        let _store: InMemoryGraphStore = InMemoryGraphStore::default();
+    }
+
+    #[test]
     fn compiled_query_reuse_across_stores() {
         let engine = GremlinEngine::new();
         let query = engine.compile("g.V().count()").unwrap();

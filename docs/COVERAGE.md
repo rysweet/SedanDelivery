@@ -23,7 +23,7 @@ integration tests to exercise.
 | `gremlin-core`            | **79.20%** |    88.36% |           40 |    70% |
 | `sedan-cypher-embedded`   | **100.00%** |   100.00% |            1 |    70% |
 | `sedan-gql-embedded`      | **100.00%** |   100.00% |            1 |    70% |
-| `sedan-gremlin-embedded`  | **96.43%** |    88.24% |            1 |    70% |
+| `sedan-gremlin-embedded`  | **99.47%** |    95.65% |            1 |    70% |
 
 Percentages come from `cargo llvm-cov --lib --json`
 (`data[0].totals.{lines,functions}.percent`); files-tested is `len(data[0].files)`.

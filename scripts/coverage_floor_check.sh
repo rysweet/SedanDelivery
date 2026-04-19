@@ -15,7 +15,7 @@ CRATES_AND_FLOORS=(
   "gremlin-core 78.2"
   "sedan-cypher-embedded 99.0"
   "sedan-gql-embedded 99.0"
-  "sedan-gremlin-embedded 96.43"
+  "sedan-gremlin-embedded 98.47"
 )
 
 TOLERANCE="1.0"
