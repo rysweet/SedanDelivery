@@ -3266,8 +3266,7 @@ mod tests {
     #[test]
     fn tokenize_steps_preserves_parens_inside_quoted_string() {
         // Parentheses inside the string must not affect paren-depth tracking.
-        let steps =
-            parse_traversal(r#"g.V().has("note","hello (world)")"#, &no_params).unwrap();
+        let steps = parse_traversal(r#"g.V().has("note","hello (world)")"#, &no_params).unwrap();
         assert_eq!(steps.len(), 2);
         assert_eq!(
             steps[1],
@@ -3280,8 +3279,7 @@ mod tests {
 
     #[test]
     fn tokenize_steps_preserves_parens_inside_single_quoted_string() {
-        let steps =
-            parse_traversal(r#"g.V().has('note','hello (world)')"#, &no_params).unwrap();
+        let steps = parse_traversal(r#"g.V().has('note','hello (world)')"#, &no_params).unwrap();
         assert_eq!(steps.len(), 2);
         assert_eq!(
             steps[1],
@@ -3311,8 +3309,7 @@ mod tests {
     #[test]
     fn tokenize_steps_preserves_escaped_double_quote() {
         // \" inside a double-quoted string must not end the string.
-        let steps =
-            parse_traversal(r#"g.V().has("q","say \"hi\", ok")"#, &no_params).unwrap();
+        let steps = parse_traversal(r#"g.V().has("q","say \"hi\", ok")"#, &no_params).unwrap();
         assert_eq!(steps.len(), 2);
         match &steps[1] {
             GremlinStep::Has(k, Some(GremlinValue::String(v))) => {
@@ -3331,8 +3328,7 @@ mod tests {
     #[test]
     fn tokenize_steps_single_quote_inside_double_quoted_string() {
         // A stray single quote inside "..." must NOT toggle string state.
-        let steps =
-            parse_traversal(r#"g.V().has("msg","it's fine, really")"#, &no_params).unwrap();
+        let steps = parse_traversal(r#"g.V().has("msg","it's fine, really")"#, &no_params).unwrap();
         assert_eq!(steps.len(), 2);
         assert_eq!(
             steps[1],
@@ -3346,8 +3342,7 @@ mod tests {
     #[test]
     fn tokenize_steps_double_quote_inside_single_quoted_string() {
         // A stray double quote inside '...' must NOT toggle string state.
-        let steps =
-            parse_traversal(r#"g.V().has('msg','he said "yes", go')"#, &no_params).unwrap();
+        let steps = parse_traversal(r#"g.V().has('msg','he said "yes", go')"#, &no_params).unwrap();
         assert_eq!(steps.len(), 2);
         assert_eq!(
             steps[1],
@@ -3376,6 +3371,122 @@ mod tests {
         // Parens inside '...' must not affect depth tracking.
         let rest = skip_balanced_parens(r#"'hi (there)').next()"#);
         assert_eq!(rest, ".next()");
+    }
+
+    // ── Quote-aware tokenization regression suite ─────────────────────────
+    // The following tests cover the canonical scenarios that an unquoted
+    // tokenizer would mis-handle: commas, parentheses, and whitespace inside
+    // string literals, and backslash escapes for quote characters and the
+    // backslash itself.
+
+    #[test]
+    fn quote_aware_comma_inside_single_quoted_string() {
+        let steps = parse_traversal(r#"g.V().has('name','Smith, John')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "name".into(),
+                Some(GremlinValue::String("Smith, John".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn quote_aware_parens_inside_single_quoted_string() {
+        let steps = parse_traversal(r#"g.V().has('expr','f(x)')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has("expr".into(), Some(GremlinValue::String("f(x)".into())))
+        );
+    }
+
+    #[test]
+    fn quote_aware_spaces_inside_single_quoted_string() {
+        let steps = parse_traversal(r#"g.V().has('msg','hello world')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "msg".into(),
+                Some(GremlinValue::String("hello world".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn quote_aware_escaped_single_quote_in_single_quoted_string() {
+        // \' inside '...' must NOT terminate the string. The unescaped value
+        // contains a literal apostrophe.
+        let steps = parse_traversal(r#"g.V().has('name','it\'s mine')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "name".into(),
+                Some(GremlinValue::String("it's mine".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn quote_aware_escaped_double_quote_in_double_quoted_string() {
+        // \" inside "..." must NOT terminate the string.
+        let steps = parse_traversal(r#"g.V().has("name","say \"hi\"")"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has(
+                "name".into(),
+                Some(GremlinValue::String(r#"say "hi""#.into()))
+            )
+        );
+    }
+
+    #[test]
+    fn quote_aware_escaped_backslash_in_single_quoted_string() {
+        // \\ inside '...' is a literal backslash; the trailing ' is the real
+        // string terminator (not escaped by the second backslash).
+        let steps = parse_traversal(r#"g.V().has('path','C:\\foo')"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has("path".into(), Some(GremlinValue::String(r"C:\foo".into())))
+        );
+    }
+
+    #[test]
+    fn quote_aware_escaped_backslash_in_double_quoted_string() {
+        let steps = parse_traversal(r#"g.V().has("path","C:\\foo")"#, &no_params).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has("path".into(), Some(GremlinValue::String(r"C:\foo".into())))
+        );
+    }
+
+    #[test]
+    fn quote_aware_mixed_quote_styles_in_single_step() {
+        // Two arguments using different quote styles, each containing the
+        // other quote character verbatim plus commas and parens.
+        let steps = parse_traversal(
+            r#"g.V().has("k, 1","v'1, (a)").has('k, 2','v"2, (b)')"#,
+            &no_params,
+        )
+        .unwrap();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            steps[1],
+            GremlinStep::Has("k, 1".into(), Some(GremlinValue::String("v'1, (a)".into())))
+        );
+        assert_eq!(
+            steps[2],
+            GremlinStep::Has(
+                "k, 2".into(),
+                Some(GremlinValue::String(r#"v"2, (b)"#.into()))
+            )
+        );
     }
 }
 
