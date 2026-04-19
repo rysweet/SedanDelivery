@@ -342,3 +342,408 @@ mod utf8_panic_tests {
         let _ = parse_traversal("g.V().has(\"name\", \"日本語\")", &|_| None);
     }
 }
+
+#[cfg(test)]
+mod direct_api_tests {
+    use super::parse_single_value;
+    use crate::types::GremlinValue;
+
+    #[test]
+    fn byte_lower() {
+        assert_eq!(
+            parse_single_value("1b", &|_| None).unwrap(),
+            GremlinValue::Integer(1)
+        );
+    }
+    #[test]
+    fn byte_upper() {
+        assert_eq!(
+            parse_single_value("1B", &|_| None).unwrap(),
+            GremlinValue::Integer(1)
+        );
+    }
+    #[test]
+    fn short_lower() {
+        assert_eq!(
+            parse_single_value("1s", &|_| None).unwrap(),
+            GremlinValue::Integer(1)
+        );
+    }
+    #[test]
+    fn int_lower() {
+        assert_eq!(
+            parse_single_value("1i", &|_| None).unwrap(),
+            GremlinValue::Integer(1)
+        );
+    }
+    #[test]
+    fn long_lower() {
+        assert_eq!(
+            parse_single_value("1l", &|_| None).unwrap(),
+            GremlinValue::Integer(1)
+        );
+    }
+    #[test]
+    fn long_upper() {
+        assert_eq!(
+            parse_single_value("1L", &|_| None).unwrap(),
+            GremlinValue::Integer(1)
+        );
+    }
+    #[test]
+    fn double_suffix() {
+        assert_eq!(
+            parse_single_value("0.5d", &|_| None).unwrap(),
+            GremlinValue::Float(0.5)
+        );
+    }
+    #[test]
+    fn float_suffix() {
+        assert_eq!(
+            parse_single_value("0.5f", &|_| None).unwrap(),
+            GremlinValue::Float(0.5)
+        );
+    }
+    #[test]
+    fn decimal_suffix() {
+        assert_eq!(
+            parse_single_value("0.5m", &|_| None).unwrap(),
+            GremlinValue::Float(0.5)
+        );
+    }
+    #[test]
+    fn string_double() {
+        assert_eq!(
+            parse_single_value("\"abc\"", &|_| None).unwrap(),
+            GremlinValue::String("abc".to_string())
+        );
+    }
+    #[test]
+    fn string_single() {
+        assert_eq!(
+            parse_single_value("'abc'", &|_| None).unwrap(),
+            GremlinValue::String("abc".to_string())
+        );
+    }
+    #[test]
+    fn string_double_escape() {
+        assert_eq!(
+            parse_single_value("\"a\\\"b\"", &|_| None).unwrap(),
+            GremlinValue::String("a\"b".to_string())
+        );
+    }
+    #[test]
+    fn string_single_escape() {
+        assert_eq!(
+            parse_single_value("'a\\'b'", &|_| None).unwrap(),
+            GremlinValue::String("a'b".to_string())
+        );
+    }
+    #[test]
+    fn bool_true() {
+        assert_eq!(
+            parse_single_value("true", &|_| None).unwrap(),
+            GremlinValue::Bool(true)
+        );
+    }
+    #[test]
+    fn bool_false() {
+        assert_eq!(
+            parse_single_value("false", &|_| None).unwrap(),
+            GremlinValue::Bool(false)
+        );
+    }
+    #[test]
+    fn null_literal() {
+        assert_eq!(
+            parse_single_value("null", &|_| None).unwrap(),
+            GremlinValue::Null
+        );
+    }
+    #[test]
+    fn nan_literal() {
+        if let GremlinValue::Float(f) = parse_single_value("NaN", &|_| None).unwrap() {
+            assert!(f.is_nan());
+        } else {
+            panic!("expected NaN");
+        }
+    }
+    #[test]
+    fn pos_infinity() {
+        assert_eq!(
+            parse_single_value("Infinity", &|_| None).unwrap(),
+            GremlinValue::Float(f64::INFINITY)
+        );
+    }
+    #[test]
+    fn neg_infinity() {
+        assert_eq!(
+            parse_single_value("-Infinity", &|_| None).unwrap(),
+            GremlinValue::Float(f64::NEG_INFINITY)
+        );
+    }
+    #[test]
+    fn double_pos_infinity() {
+        assert_eq!(
+            parse_single_value("Double.POSITIVE_INFINITY", &|_| None).unwrap(),
+            GremlinValue::Float(f64::INFINITY)
+        );
+    }
+    #[test]
+    fn double_neg_infinity() {
+        assert_eq!(
+            parse_single_value("Double.NEGATIVE_INFINITY", &|_| None).unwrap(),
+            GremlinValue::Float(f64::NEG_INFINITY)
+        );
+    }
+    #[test]
+    fn set_literal_dedups() {
+        if let GremlinValue::Map(m) = parse_single_value("{1, 2, 2, 3}", &|_| None).unwrap() {
+            if let Some(GremlinValue::List(l)) = m.get("~set") {
+                assert_eq!(l.len(), 3);
+            } else {
+                panic!("expected ~set list");
+            }
+        } else {
+            panic!("expected map");
+        }
+    }
+    #[test]
+    fn list_literal() {
+        if let GremlinValue::List(l) = parse_single_value("[1, 2, 3]", &|_| None).unwrap() {
+            assert_eq!(l.len(), 3);
+        } else {
+            panic!("expected list");
+        }
+    }
+    #[test]
+    fn groovy_map_literal() {
+        if let GremlinValue::Map(m) = parse_single_value("[\"k\": \"v\"]", &|_| None).unwrap() {
+            assert_eq!(m.get("k"), Some(&GremlinValue::String("v".to_string())));
+        } else {
+            panic!("expected map");
+        }
+    }
+    #[test]
+    fn empty_groovy_map() {
+        if let GremlinValue::Map(m) = parse_single_value("[:]", &|_| None).unwrap() {
+            assert!(m.is_empty());
+        } else {
+            panic!("expected empty map");
+        }
+    }
+    #[test]
+    fn typed_d_int() {
+        assert_eq!(
+            parse_single_value("d[29].i", &|_| None).unwrap(),
+            GremlinValue::Integer(29)
+        );
+    }
+    #[test]
+    fn typed_d_float() {
+        assert_eq!(
+            parse_single_value("d[0.5].d", &|_| None).unwrap(),
+            GremlinValue::Float(0.5)
+        );
+    }
+    #[test]
+    fn t_label_token() {
+        assert_eq!(
+            parse_single_value("T.label", &|_| None).unwrap(),
+            GremlinValue::String("~label".to_string())
+        );
+    }
+    #[test]
+    fn t_id_token() {
+        assert_eq!(
+            parse_single_value("T.id", &|_| None).unwrap(),
+            GremlinValue::String("~id".to_string())
+        );
+    }
+    #[test]
+    fn t_label_bracket() {
+        assert_eq!(
+            parse_single_value("t[label]", &|_| None).unwrap(),
+            GremlinValue::String("~label".to_string())
+        );
+    }
+    #[test]
+    fn t_id_bracket() {
+        assert_eq!(
+            parse_single_value("t[id]", &|_| None).unwrap(),
+            GremlinValue::String("~id".to_string())
+        );
+    }
+    #[test]
+    fn scope_local() {
+        assert_eq!(
+            parse_single_value("Scope.local", &|_| None).unwrap(),
+            GremlinValue::String("Scope.local".to_string())
+        );
+    }
+    #[test]
+    fn column_keys() {
+        assert_eq!(
+            parse_single_value("Column.keys", &|_| None).unwrap(),
+            GremlinValue::String("Column.keys".to_string())
+        );
+    }
+    #[test]
+    fn order_desc() {
+        assert_eq!(
+            parse_single_value("Order.desc", &|_| None).unwrap(),
+            GremlinValue::String("Order.desc".to_string())
+        );
+    }
+    #[test]
+    fn merge_token() {
+        assert_eq!(
+            parse_single_value("Merge.onMatch", &|_| None).unwrap(),
+            GremlinValue::String("Merge.onMatch".to_string())
+        );
+    }
+    #[test]
+    fn pick_none() {
+        assert_eq!(
+            parse_single_value("Pick.none", &|_| None).unwrap(),
+            GremlinValue::String("none".to_string())
+        );
+    }
+    #[test]
+    fn g_type_literal() {
+        assert_eq!(
+            parse_single_value("GType.i32", &|_| None).unwrap(),
+            GremlinValue::String("GType.i32".to_string())
+        );
+    }
+    #[test]
+    fn datetime_literal() {
+        assert_eq!(
+            parse_single_value("datetime(\"2023-01-01T00:00:00Z\")", &|_| None).unwrap(),
+            GremlinValue::String("__gremlin_dt__:2023-01-01T00:00:00Z".to_string())
+        );
+    }
+    #[test]
+    fn uuid_literal() {
+        assert_eq!(
+            parse_single_value("UUID(\"abc\")", &|_| None).unwrap(),
+            GremlinValue::String("__gremlin_uuid__:abc".to_string())
+        );
+    }
+    #[test]
+    fn anonymous_traversal_as_string() {
+        assert_eq!(
+            parse_single_value("__.select(\"a\")", &|_| None).unwrap(),
+            GremlinValue::String("__.select(\"a\")".to_string())
+        );
+    }
+    #[test]
+    fn unknown_falls_back_to_string() {
+        assert_eq!(
+            parse_single_value("foo_unknown_xyz", &|_| None).unwrap(),
+            GremlinValue::String("foo_unknown_xyz".to_string())
+        );
+    }
+    #[test]
+    fn empty_input_is_null() {
+        assert_eq!(
+            parse_single_value("", &|_| None).unwrap(),
+            GremlinValue::Null
+        );
+    }
+    #[test]
+    fn negative_integer() {
+        assert_eq!(
+            parse_single_value("-42", &|_| None).unwrap(),
+            GremlinValue::Integer(-42)
+        );
+    }
+    #[test]
+    fn parameter_resolves() {
+        let v = parse_single_value("param_x", &|n| {
+            if n == "param_x" {
+                Some(GremlinValue::Integer(99))
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(v, GremlinValue::Integer(99));
+    }
+
+    // parse_literal_value: unsuffixed paths
+    #[test]
+    fn lit_value_int_no_suffix() {
+        assert_eq!(
+            super::parse_literal_value("42", &|_| None),
+            Some(GremlinValue::Integer(42))
+        );
+    }
+    #[test]
+    fn lit_value_float_no_suffix() {
+        assert_eq!(
+            super::parse_literal_value("0.5", &|_| None),
+            Some(GremlinValue::Float(0.5))
+        );
+    }
+    #[test]
+    fn lit_value_quoted_double() {
+        assert_eq!(
+            super::parse_literal_value("\"x\"", &|_| None),
+            Some(GremlinValue::String("x".to_string()))
+        );
+    }
+    #[test]
+    fn lit_value_quoted_single() {
+        assert_eq!(
+            super::parse_literal_value("'x'", &|_| None),
+            Some(GremlinValue::String("x".to_string()))
+        );
+    }
+    #[test]
+    fn lit_value_true() {
+        assert_eq!(
+            super::parse_literal_value("true", &|_| None),
+            Some(GremlinValue::Bool(true))
+        );
+    }
+    #[test]
+    fn lit_value_false() {
+        assert_eq!(
+            super::parse_literal_value("false", &|_| None),
+            Some(GremlinValue::Bool(false))
+        );
+    }
+    #[test]
+    fn lit_value_null() {
+        assert_eq!(
+            super::parse_literal_value("null", &|_| None),
+            Some(GremlinValue::Null)
+        );
+    }
+    #[test]
+    fn lit_value_param_resolves() {
+        let v = super::parse_literal_value("p", &|n| {
+            if n == "p" {
+                Some(GremlinValue::Integer(7))
+            } else {
+                None
+            }
+        });
+        assert_eq!(v, Some(GremlinValue::Integer(7)));
+    }
+    #[test]
+    fn lit_value_long_suffix() {
+        assert_eq!(
+            super::parse_literal_value("1L", &|_| None),
+            Some(GremlinValue::Integer(1))
+        );
+    }
+    #[test]
+    fn lit_value_double_suffix() {
+        assert_eq!(
+            super::parse_literal_value("0.5d", &|_| None),
+            Some(GremlinValue::Float(0.5))
+        );
+    }
+}
