@@ -20,6 +20,8 @@ configuration:
     role: Maintain
   - member: mvelazco
     role: Maintain
+  - member: jdellamore_microsoft
+    role: Maintain
   - team: adapt-fte-all
     role: Push
 # nested groups not suppported yet
