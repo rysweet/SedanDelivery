@@ -1,5 +1,4 @@
 /// SedanDB client -- top-level connection wrapper around the redis crate.
-
 use redis::Client;
 
 use crate::error::SedanError;
@@ -40,8 +39,7 @@ impl SedanDB {
     /// Return the names of all graphs on the server.
     pub fn list_graphs(&self) -> Result<Vec<String>, SedanError> {
         let mut conn = self.client.get_connection()?;
-        let value: redis::Value =
-            redis::cmd("GQL.LIST-GRAPHS").query(&mut conn)?;
+        let value: redis::Value = redis::cmd("GQL.LIST-GRAPHS").query(&mut conn)?;
         match value {
             redis::Value::Array(items) => {
                 let mut names = Vec::with_capacity(items.len());

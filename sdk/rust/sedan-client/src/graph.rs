@@ -1,5 +1,4 @@
 /// Graph handle -- sends GQL commands and parses wire-format responses.
-
 use redis::Connection;
 
 use crate::error::SedanError;
@@ -32,11 +31,10 @@ impl Graph {
     ///
     /// Returns a `QueryResult` containing decoded records.
     pub fn query(&mut self, cypher: &str) -> Result<QueryResult, SedanError> {
-        let value: redis::Value =
-            redis::cmd("GQL.QUERY")
-                .arg(&self.name)
-                .arg(cypher)
-                .query(&mut self.conn)?;
+        let value: redis::Value = redis::cmd("GQL.QUERY")
+            .arg(&self.name)
+            .arg(cypher)
+            .query(&mut self.conn)?;
         parse_query_response(value)
     }
 
@@ -57,11 +55,10 @@ impl Graph {
     ///
     /// Returns a `QueryResult` containing decoded records and mutation stats.
     pub fn mutate(&mut self, cypher: &str) -> Result<QueryResult, SedanError> {
-        let value: redis::Value =
-            redis::cmd("GQL.MUTATE")
-                .arg(&self.name)
-                .arg(cypher)
-                .query(&mut self.conn)?;
+        let value: redis::Value = redis::cmd("GQL.MUTATE")
+            .arg(&self.name)
+            .arg(cypher)
+            .query(&mut self.conn)?;
         parse_mutate_response(value)
     }
 
@@ -93,15 +90,12 @@ impl Graph {
 
     /// Return the physical execution plan for a Cypher query.
     pub fn explain(&mut self, cypher: &str) -> Result<String, SedanError> {
-        let value: redis::Value =
-            redis::cmd("GQL.EXPLAIN")
-                .arg(&self.name)
-                .arg(cypher)
-                .query(&mut self.conn)?;
+        let value: redis::Value = redis::cmd("GQL.EXPLAIN")
+            .arg(&self.name)
+            .arg(cypher)
+            .query(&mut self.conn)?;
         match value {
-            redis::Value::BulkString(bytes) => {
-                Ok(String::from_utf8_lossy(&bytes).to_string())
-            }
+            redis::Value::BulkString(bytes) => Ok(String::from_utf8_lossy(&bytes).to_string()),
             redis::Value::SimpleString(s) => Ok(s),
             _ => Err(SedanError::Protocol(format!(
                 "Expected string from GQL.EXPLAIN, got {:?}",

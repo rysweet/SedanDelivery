@@ -1,11 +1,10 @@
+use sedan_client::result::{parse_mutate_response, parse_query_response};
+use sedan_client::types::{decode_value, substitute_params, Point, SedanPath};
 /// Comprehensive unit tests for sedan-client.
 ///
 /// These tests do NOT require a running SedanDelivery instance.
 /// They test parsing, escaping, type decoding, and result handling.
-
 use sedan_client::{MutationStats, QueryResult, Record, SedanValue};
-use sedan_client::result::{parse_query_response, parse_mutate_response};
-use sedan_client::types::{decode_value, substitute_params, Point, SedanPath};
 
 // ---------------------------------------------------------------------------
 // 1. MutationStats::parse
@@ -66,15 +65,29 @@ fn test_mutation_stats_parse_empty_string() {
 
 #[test]
 fn test_mutation_stats_equality() {
-    let a = MutationStats { nodes_created: 1, edges_created: 2, ..Default::default() };
-    let b = MutationStats { nodes_created: 1, edges_created: 2, ..Default::default() };
+    let a = MutationStats {
+        nodes_created: 1,
+        edges_created: 2,
+        ..Default::default()
+    };
+    let b = MutationStats {
+        nodes_created: 1,
+        edges_created: 2,
+        ..Default::default()
+    };
     assert_eq!(a, b);
 }
 
 #[test]
 fn test_mutation_stats_inequality() {
-    let a = MutationStats { nodes_created: 1, ..Default::default() };
-    let b = MutationStats { nodes_created: 2, ..Default::default() };
+    let a = MutationStats {
+        nodes_created: 1,
+        ..Default::default()
+    };
+    let b = MutationStats {
+        nodes_created: 2,
+        ..Default::default()
+    };
     assert_ne!(a, b);
 }
 
@@ -93,7 +106,10 @@ fn make_record(pairs: &[(&str, serde_json::Value)]) -> Record {
 #[test]
 fn test_record_get() {
     let r = make_record(&[("name", serde_json::Value::String("Alice".into()))]);
-    assert_eq!(r.get("name"), Some(&serde_json::Value::String("Alice".into())));
+    assert_eq!(
+        r.get("name"),
+        Some(&serde_json::Value::String("Alice".into()))
+    );
     assert_eq!(r.get("missing"), None);
 }
 
@@ -149,10 +165,7 @@ fn test_record_index_missing_panics() {
 
 #[test]
 fn test_record_keys() {
-    let r = make_record(&[
-        ("b", serde_json::json!(2)),
-        ("a", serde_json::json!(1)),
-    ]);
+    let r = make_record(&[("b", serde_json::json!(2)), ("a", serde_json::json!(1))]);
     let keys: Vec<&String> = r.keys().collect();
     assert_eq!(keys.len(), 2);
     // serde_json::Map preserves insertion order
@@ -181,7 +194,10 @@ fn test_substitute_null() {
 fn test_substitute_bool() {
     let result = substitute_params(
         "SET n.a = $a, n.d = $d",
-        &[("a", SedanValue::Bool(true)), ("d", SedanValue::Bool(false))],
+        &[
+            ("a", SedanValue::Bool(true)),
+            ("d", SedanValue::Bool(false)),
+        ],
     );
     assert_eq!(result, "SET n.a = true, n.d = false");
 }
@@ -224,19 +240,13 @@ fn test_substitute_string_with_quotes() {
 
 #[test]
 fn test_substitute_string_with_backslash() {
-    let result = substitute_params(
-        "SET n.x = $val",
-        &[("val", SedanValue::Str("a\\b".into()))],
-    );
+    let result = substitute_params("SET n.x = $val", &[("val", SedanValue::Str("a\\b".into()))]);
     assert_eq!(result, "SET n.x = 'a\\\\b'");
 }
 
 #[test]
 fn test_substitute_empty_string() {
-    let result = substitute_params(
-        "SET n.x = $val",
-        &[("val", SedanValue::Str("".into()))],
-    );
+    let result = substitute_params("SET n.x = $val", &[("val", SedanValue::Str("".into()))]);
     assert_eq!(result, "SET n.x = ''");
 }
 
@@ -244,11 +254,14 @@ fn test_substitute_empty_string() {
 fn test_substitute_list() {
     let result = substitute_params(
         "WHERE n.id IN $ids",
-        &[("ids", SedanValue::List(vec![
-            SedanValue::Int(1),
-            SedanValue::Int(2),
-            SedanValue::Int(3),
-        ]))],
+        &[(
+            "ids",
+            SedanValue::List(vec![
+                SedanValue::Int(1),
+                SedanValue::Int(2),
+                SedanValue::Int(3),
+            ]),
+        )],
     );
     assert_eq!(result, "WHERE n.id IN [1, 2, 3]");
 }
@@ -257,20 +270,20 @@ fn test_substitute_list() {
 fn test_substitute_nested_list() {
     let result = substitute_params(
         "SET n.x = $val",
-        &[("val", SedanValue::List(vec![
-            SedanValue::Int(1),
-            SedanValue::List(vec![SedanValue::Int(2), SedanValue::Int(3)]),
-        ]))],
+        &[(
+            "val",
+            SedanValue::List(vec![
+                SedanValue::Int(1),
+                SedanValue::List(vec![SedanValue::Int(2), SedanValue::Int(3)]),
+            ]),
+        )],
     );
     assert_eq!(result, "SET n.x = [1, [2, 3]]");
 }
 
 #[test]
 fn test_substitute_empty_list() {
-    let result = substitute_params(
-        "SET n.x = $val",
-        &[("val", SedanValue::List(vec![]))],
-    );
+    let result = substitute_params("SET n.x = $val", &[("val", SedanValue::List(vec![]))]);
     assert_eq!(result, "SET n.x = []");
 }
 
@@ -301,12 +314,15 @@ fn test_substitute_unicode_string() {
 fn test_substitute_mixed_list() {
     let result = substitute_params(
         "SET n.x = $val",
-        &[("val", SedanValue::List(vec![
-            SedanValue::Int(1),
-            SedanValue::Str("hello".into()),
-            SedanValue::Bool(true),
-            SedanValue::Null,
-        ]))],
+        &[(
+            "val",
+            SedanValue::List(vec![
+                SedanValue::Int(1),
+                SedanValue::Str("hello".into()),
+                SedanValue::Bool(true),
+                SedanValue::Null,
+            ]),
+        )],
     );
     assert_eq!(result, "SET n.x = [1, 'hello', true, null]");
 }
@@ -438,8 +454,14 @@ fn test_decode_null() {
 
 #[test]
 fn test_decode_bool() {
-    assert_eq!(decode_value(&serde_json::json!(true)), serde_json::json!(true));
-    assert_eq!(decode_value(&serde_json::json!(false)), serde_json::json!(false));
+    assert_eq!(
+        decode_value(&serde_json::json!(true)),
+        serde_json::json!(true)
+    );
+    assert_eq!(
+        decode_value(&serde_json::json!(false)),
+        serde_json::json!(false)
+    );
 }
 
 #[test]
@@ -449,7 +471,10 @@ fn test_decode_int() {
 
 #[test]
 fn test_decode_float() {
-    assert_eq!(decode_value(&serde_json::json!(3.14)), serde_json::json!(3.14));
+    assert_eq!(
+        decode_value(&serde_json::json!(3.14)),
+        serde_json::json!(3.14)
+    );
 }
 
 #[test]
@@ -473,7 +498,10 @@ fn test_decode_localdatetime() {
 #[test]
 fn test_decode_datetime_with_tz() {
     let v = serde_json::json!("__datetime:2024-01-15T10:30:00+01:00[Europe/Berlin]");
-    assert_eq!(decode_value(&v), serde_json::json!("2024-01-15T10:30:00+01:00"));
+    assert_eq!(
+        decode_value(&v),
+        serde_json::json!("2024-01-15T10:30:00+01:00")
+    );
 }
 
 #[test]
@@ -606,9 +634,9 @@ fn test_parse_query_response_nil() {
 
 #[test]
 fn test_parse_query_response_with_tagged_values() {
-    let value = redis::Value::Array(vec![
-        redis::Value::BulkString(b"{\"d\":\"__date:2024-01-15\",\"n\":\"__node:42\"}".to_vec()),
-    ]);
+    let value = redis::Value::Array(vec![redis::Value::BulkString(
+        b"{\"d\":\"__date:2024-01-15\",\"n\":\"__node:42\"}".to_vec(),
+    )]);
     let result = parse_query_response(value).unwrap();
     assert_eq!(result[0]["d"], serde_json::json!("2024-01-15"));
     assert_eq!(result[0]["n"], serde_json::json!(42));
@@ -626,9 +654,9 @@ fn test_parse_query_response_protocol_error() {
 
 #[test]
 fn test_parse_mutate_response_with_rows_and_stats() {
-    let rows = redis::Value::Array(vec![
-        redis::Value::BulkString(b"{\"n.name\":\"Alice\"}".to_vec()),
-    ]);
+    let rows = redis::Value::Array(vec![redis::Value::BulkString(
+        b"{\"n.name\":\"Alice\"}".to_vec(),
+    )]);
     let stats = redis::Value::BulkString(
         b"nodes_created=1 nodes_deleted=0 edges_created=0 edges_deleted=0 properties_set=2 labels_added=1".to_vec(),
     );
@@ -678,9 +706,7 @@ fn test_parse_mutate_response_protocol_error() {
 
 #[test]
 fn test_parse_query_response_malformed_json() {
-    let value = redis::Value::Array(vec![
-        redis::Value::BulkString(b"not valid json".to_vec()),
-    ]);
+    let value = redis::Value::Array(vec![redis::Value::BulkString(b"not valid json".to_vec())]);
     let err = parse_query_response(value).unwrap_err();
     match err {
         sedan_client::SedanError::Json(_) => {}
@@ -692,9 +718,7 @@ fn test_parse_query_response_malformed_json() {
 fn test_parse_query_response_non_object_json() {
     // A valid JSON value but not a JSON object -- serde will fail to parse
     // it as a Map<String, Value>.
-    let value = redis::Value::Array(vec![
-        redis::Value::BulkString(b"[1, 2, 3]".to_vec()),
-    ]);
+    let value = redis::Value::Array(vec![redis::Value::BulkString(b"[1, 2, 3]".to_vec())]);
     let err = parse_query_response(value).unwrap_err();
     match err {
         sedan_client::SedanError::Json(_) => {}
@@ -751,7 +775,11 @@ fn test_sedan_value_debug() {
 
 #[test]
 fn test_point_construction() {
-    let p = Point { x: 1.5, y: 2.5, crs: "Wgs84".into() };
+    let p = Point {
+        x: 1.5,
+        y: 2.5,
+        crs: "Wgs84".into(),
+    };
     assert_eq!(p.x, 1.5);
     assert_eq!(p.y, 2.5);
     assert_eq!(p.crs, "Wgs84");
@@ -759,22 +787,39 @@ fn test_point_construction() {
 
 #[test]
 fn test_point_equality() {
-    let a = Point { x: 1.0, y: 2.0, crs: "Wgs84".into() };
-    let b = Point { x: 1.0, y: 2.0, crs: "Wgs84".into() };
+    let a = Point {
+        x: 1.0,
+        y: 2.0,
+        crs: "Wgs84".into(),
+    };
+    let b = Point {
+        x: 1.0,
+        y: 2.0,
+        crs: "Wgs84".into(),
+    };
     assert_eq!(a, b);
 }
 
 #[test]
 fn test_sedan_path_construction() {
-    let p = SedanPath { nodes: vec![1, 2, 3], edges: vec![10, 20] };
+    let p = SedanPath {
+        nodes: vec![1, 2, 3],
+        edges: vec![10, 20],
+    };
     assert_eq!(p.nodes, vec![1, 2, 3]);
     assert_eq!(p.edges, vec![10, 20]);
 }
 
 #[test]
 fn test_sedan_path_equality() {
-    let a = SedanPath { nodes: vec![1, 2], edges: vec![10] };
-    let b = SedanPath { nodes: vec![1, 2], edges: vec![10] };
+    let a = SedanPath {
+        nodes: vec![1, 2],
+        edges: vec![10],
+    };
+    let b = SedanPath {
+        nodes: vec![1, 2],
+        edges: vec![10],
+    };
     assert_eq!(a, b);
 }
 
@@ -823,9 +868,9 @@ fn test_query_result_empty_stats_default() {
 #[test]
 fn test_parse_query_response_simple_string() {
     // Some Redis responses may use SimpleString instead of BulkString
-    let value = redis::Value::Array(vec![
-        redis::Value::SimpleString("{\"name\":\"Eve\"}".to_string()),
-    ]);
+    let value = redis::Value::Array(vec![redis::Value::SimpleString(
+        "{\"name\":\"Eve\"}".to_string(),
+    )]);
     let result = parse_query_response(value).unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].get_str("name"), Some("Eve"));

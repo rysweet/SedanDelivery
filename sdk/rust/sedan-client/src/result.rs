@@ -1,5 +1,4 @@
 /// Query result types: QueryResult, Record, and MutationStats.
-
 use std::ops::Index;
 
 use crate::error::SedanError;
