@@ -29,7 +29,35 @@ const METRICS_SRC: &str = include_str!(concat!(
 ));
 const CONNECTION_SRC: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/connection.rs"));
-const NODES_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/writes/nodes.rs"));
+// `writes/nodes.rs` was decomposed into a `writes/nodes/` directory; the
+// substring-based audits below operate on the concatenation of every node
+// write submodule.
+const NODES_SRC: &str = concat!(
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/nodes/mod.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/nodes/create.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/nodes/properties.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/nodes/labels.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/nodes/delete.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/nodes/batch.rs"
+    )),
+);
 const EDGES_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/writes/edges.rs"));
 const GRAPHS_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/writes/graphs.rs"));
 const READS_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads.rs"));
