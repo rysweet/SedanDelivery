@@ -18,5 +18,6 @@ pub(crate) fn ensure_graph_exists(store: &dyn GraphStore, graph: &str) -> Result
     }
 }
 
+pub(crate) mod cypher_translation;
 pub mod executor;
 pub mod types;
