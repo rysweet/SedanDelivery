@@ -1,0 +1,133 @@
+// writes/graphs/delete_collect.rs -- Manifest scan helpers used by `delete_graph_impl`.
+//
+// These helpers walk the per-graph node and edge manifests in bounded chunks,
+// renewing the write lock between chunks, and accumulate the auxiliary data
+// (label set, reltype set, propidx-key set) the orchestrator in `delete.rs`
+// needs to enumerate every per-graph key for a single cluster-safe DEL.
+
+use std::collections::HashSet;
+
+use cypher_core::error::StorageError;
+use cypher_core::serde_value::json_to_props;
+
+use crate::keys::{key_edge, key_node, key_propidx, value_to_index_key};
+use crate::locked_conn::LockedRedisConn;
+use crate::RedisGraphStore;
+
+impl RedisGraphStore {
+    /// Walk the node manifest in chunks, accumulating label names and
+    /// property-index keys derived from the live property values.
+    pub(super) fn delete_graph_collect_node_metadata(
+        &self,
+        conn: &mut LockedRedisConn,
+        name: &str,
+        node_ids: &[String],
+        parsed_indexes: &[(String, String)],
+        label_names: &mut HashSet<String>,
+        propidx_keys: &mut HashSet<String>,
+    ) -> Result<(), StorageError> {
+        for chunk in node_ids.chunks(500) {
+            conn.renew_lock()?;
+            let mut valid_ids = Vec::new();
+            let mut pipe = conn.pipeline();
+            for id_str in chunk {
+                match id_str.parse::<u64>() {
+                    Ok(id) => {
+                        valid_ids.push(id_str.as_str());
+                        pipe.cmd("HMGET")
+                            .arg(self.kp(key_node(name, id)))
+                            .arg("labels")
+                            .arg("props");
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            graph = %name,
+                            node_id = %id_str,
+                            %error,
+                            "delete_graph skipping malformed node ID from nodes manifest"
+                        );
+                    }
+                }
+            }
+            if valid_ids.is_empty() {
+                continue;
+            }
+            let results: Vec<Vec<Option<String>>> =
+                pipe.query(conn).map_err(crate::backend_storage_error)?;
+            for (_id_str, fields) in valid_ids.into_iter().zip(results) {
+                let Some(labels_json) = fields.first().and_then(|value| value.as_ref()) else {
+                    continue;
+                };
+                let Some(props_json) = fields.get(1).and_then(|value| value.as_ref()) else {
+                    continue;
+                };
+                let labels: Vec<String> =
+                    serde_json::from_str(labels_json).map_err(|e| StorageError::Serialization {
+                        msg: format!("delete_graph labels decode: {e}"),
+                    })?;
+                for label in &labels {
+                    label_names.insert(label.clone());
+                }
+                let props = json_to_props(props_json).map_err(|e| StorageError::Serialization {
+                    msg: format!("delete_graph props decode: {e}"),
+                })?;
+                for (label, property) in parsed_indexes {
+                    if labels.iter().any(|node_label| node_label == label) {
+                        if let Some(value) = props.get(property) {
+                            if !value.is_null() {
+                                propidx_keys.insert(self.kp(key_propidx(
+                                    name,
+                                    label,
+                                    property,
+                                    &value_to_index_key(value),
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Walk the edge manifest in chunks, accumulating relationship-type names
+    /// observed on the persisted edge hashes.
+    pub(super) fn delete_graph_collect_edge_reltypes(
+        &self,
+        conn: &mut LockedRedisConn,
+        name: &str,
+        edge_ids: &[String],
+        reltype_names: &mut HashSet<String>,
+    ) -> Result<(), StorageError> {
+        for chunk in edge_ids.chunks(500) {
+            conn.renew_lock()?;
+            let mut pipe = conn.pipeline();
+            let mut has_cmds = false;
+            for id_str in chunk {
+                match id_str.parse::<u64>() {
+                    Ok(id) => {
+                        pipe.cmd("HGET")
+                            .arg(self.kp(key_edge(name, id)))
+                            .arg("rel_type");
+                        has_cmds = true;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            graph = %name,
+                            edge_id = %id_str,
+                            %error,
+                            "delete_graph skipping malformed edge ID from edges manifest"
+                        );
+                    }
+                }
+            }
+            if !has_cmds {
+                continue;
+            }
+            let results: Vec<Option<String>> =
+                pipe.query(conn).map_err(crate::backend_storage_error)?;
+            reltype_names.extend(results.into_iter().flatten());
+        }
+        Ok(())
+    }
+}

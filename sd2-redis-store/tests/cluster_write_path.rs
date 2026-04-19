@@ -80,7 +80,24 @@ const EDGES_SRC: &str = concat!(
         "/src/writes/edges/batch.rs"
     )),
 );
-const GRAPHS_SRC: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/writes/graphs.rs"));
+const GRAPHS_SRC: &str = concat!(
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/graphs/mod.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/graphs/create.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/graphs/delete.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/writes/graphs/delete_collect.rs"
+    )),
+);
 const READS_SRC: &str = concat!(
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/mod.rs")),
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/reads/helpers.rs")),
