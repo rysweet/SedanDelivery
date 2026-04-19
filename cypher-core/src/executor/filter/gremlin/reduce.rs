@@ -165,3 +165,135 @@ pub(crate) fn dedup_local(vals: Vec<Value>) -> Result<Value, GqlError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
+    fn l(items: Vec<Value>) -> Value {
+        Value::List(items)
+    }
+
+    #[test]
+    fn fold_reduce_sum_int_and_float() {
+        let r = fold_reduce(vec![
+            l(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Int(10),
+            s("sum"),
+        ])
+        .unwrap();
+        assert_eq!(r, Value::Int(16));
+        let r = fold_reduce(vec![
+            l(vec![Value::Float(1.5), Value::Int(2)]),
+            Value::Float(0.5),
+            s("sum"),
+        ])
+        .unwrap();
+        assert_eq!(r, Value::Float(4.0));
+        // unknown op returns seed
+        assert_eq!(
+            fold_reduce(vec![l(vec![]), Value::Int(7), s("unknown")]).unwrap(),
+            Value::Int(7)
+        );
+        // default op when missing
+        assert_eq!(
+            fold_reduce(vec![l(vec![Value::Int(1)]), Value::Int(0)]).unwrap(),
+            Value::Int(1)
+        );
+    }
+
+    #[test]
+    fn fold_reduce_addall_maps() {
+        let mut a = IndexMap::<Box<str>, Value>::new();
+        a.insert("k".into(), Value::Int(1));
+        let mut b = IndexMap::<Box<str>, Value>::new();
+        b.insert("k".into(), Value::Int(99));
+        b.insert("j".into(), Value::Int(2));
+        let r = fold_reduce(vec![l(vec![Value::Map(b)]), Value::Map(a), s("addall")]).unwrap();
+        if let Value::Map(m) = r {
+            assert_eq!(m.get("k"), Some(&Value::Int(99)));
+            assert_eq!(m.get("j"), Some(&Value::Int(2)));
+        }
+        // addall with non-map seed → starts empty
+        let mut b = IndexMap::<Box<str>, Value>::new();
+        b.insert("x".into(), Value::Int(5));
+        let r = fold_reduce(vec![l(vec![Value::Map(b)]), Value::Int(0), s("addall")]).unwrap();
+        if let Value::Map(m) = r {
+            assert_eq!(m.get("x"), Some(&Value::Int(5)));
+        }
+    }
+
+    #[test]
+    fn math_basic_and_extra_vars() {
+        let r = math(vec![Value::Int(3), s("_ + 1")]).unwrap();
+        assert_eq!(r, Value::Float(4.0));
+        let r = math(vec![Value::Int(2), s("_ * x"), s("x"), Value::Int(5)]).unwrap();
+        assert_eq!(r, Value::Float(10.0));
+        // missing expr -> Null
+        assert_eq!(math(vec![Value::Int(1)]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn tail_local_list_and_map_and_other() {
+        let r = tail_local(vec![
+            l(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            Value::Int(2),
+        ])
+        .unwrap();
+        assert_eq!(r, l(vec![Value::Int(2), Value::Int(3)]));
+        // Default n=1
+        let r = tail_local(vec![l(vec![Value::Int(1), Value::Int(2)])]).unwrap();
+        assert_eq!(r, l(vec![Value::Int(2)]));
+        // n bigger than length
+        let r = tail_local(vec![l(vec![Value::Int(1)]), Value::Int(5)]).unwrap();
+        assert_eq!(r, l(vec![Value::Int(1)]));
+        // Map
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("a".into(), Value::Int(1));
+        m.insert("b".into(), Value::Int(2));
+        m.insert("c".into(), Value::Int(3));
+        let r = tail_local(vec![Value::Map(m), Value::Int(2)]).unwrap();
+        if let Value::Map(m) = r {
+            assert_eq!(m.len(), 2);
+            assert!(m.contains_key("b"));
+            assert!(m.contains_key("c"));
+        }
+        // Null and scalar
+        assert_eq!(tail_local(vec![Value::Null]).unwrap(), Value::Null);
+        assert_eq!(tail_local(vec![Value::Int(7)]).unwrap(), Value::Int(7));
+    }
+
+    #[test]
+    fn dedup_local_simple_and_keyed() {
+        let r = dedup_local(vec![l(vec![
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(1),
+            Value::Int(3),
+        ])])
+        .unwrap();
+        assert_eq!(r, l(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
+        // Keyed dedup over list of maps
+        let mut a = IndexMap::<Box<str>, Value>::new();
+        a.insert("k".into(), Value::Int(1));
+        let mut b = IndexMap::<Box<str>, Value>::new();
+        b.insert("k".into(), Value::Int(2));
+        let mut c = IndexMap::<Box<str>, Value>::new();
+        c.insert("k".into(), Value::Int(1));
+        let r = dedup_local(vec![
+            l(vec![Value::Map(a), Value::Map(b), Value::Map(c)]),
+            s("k"),
+        ])
+        .unwrap();
+        if let Value::List(items) = r {
+            assert_eq!(items.len(), 2);
+        }
+        // Null and scalar pass-through
+        assert_eq!(dedup_local(vec![Value::Null]).unwrap(), Value::Null);
+        assert_eq!(dedup_local(vec![Value::Int(5)]).unwrap(), Value::Int(5));
+    }
+}

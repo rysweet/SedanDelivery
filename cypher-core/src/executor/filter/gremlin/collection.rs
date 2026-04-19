@@ -403,3 +403,225 @@ pub(crate) fn values_all(vals: Vec<Value>) -> Result<Value, GqlError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn l(items: Vec<Value>) -> Value {
+        Value::List(items)
+    }
+
+    #[test]
+    fn combine_lists_and_errors() {
+        assert_eq!(
+            combine(vec![l(vec![Value::Int(1)]), l(vec![Value::Int(2)])]).unwrap(),
+            l(vec![Value::Int(1), Value::Int(2)])
+        );
+        assert!(combine(vec![Value::Null, l(vec![])]).is_err());
+        assert!(combine(vec![l(vec![]), Value::Null]).is_err());
+        assert!(combine(vec![Value::Int(1), l(vec![])]).is_err());
+        assert!(combine(vec![l(vec![]), Value::Int(1)]).is_err());
+    }
+
+    #[test]
+    fn merge_lists_and_maps_and_errors() {
+        assert_eq!(
+            merge(vec![
+                l(vec![Value::Int(1)]),
+                l(vec![Value::Int(1), Value::Int(2)])
+            ])
+            .unwrap(),
+            l(vec![Value::Int(1), Value::Int(2)])
+        );
+        let mut a = IndexMap::<Box<str>, Value>::new();
+        a.insert("k1".into(), Value::Int(1));
+        a.insert("k2".into(), Value::Int(2));
+        let mut b = IndexMap::<Box<str>, Value>::new();
+        b.insert("k2".into(), Value::Int(99));
+        b.insert("k3".into(), Value::Int(3));
+        let r = merge(vec![Value::Map(a), Value::Map(b)]).unwrap();
+        if let Value::Map(m) = r {
+            assert_eq!(m.get("k2"), Some(&Value::Int(99)));
+            assert_eq!(m.get("k3"), Some(&Value::Int(3)));
+        } else {
+            panic!("expected map");
+        }
+        // errors
+        assert!(merge(vec![Value::Null, l(vec![])]).is_err());
+        assert!(merge(vec![l(vec![]), Value::Null]).is_err());
+        assert!(merge(vec![l(vec![]), Value::Map(IndexMap::new())]).is_err());
+        assert!(merge(vec![Value::Int(1), l(vec![])]).is_err());
+        assert!(merge(vec![Value::Int(1), Value::Map(IndexMap::new())]).is_err());
+        assert!(merge(vec![Value::Int(1), Value::Int(2)]).is_err());
+    }
+
+    #[test]
+    fn intersect_difference_disjunct() {
+        assert_eq!(
+            intersect(vec![
+                l(vec![Value::Int(1), Value::Int(2), Value::Int(2)]),
+                l(vec![Value::Int(2), Value::Int(3)]),
+            ])
+            .unwrap(),
+            l(vec![Value::Int(2)])
+        );
+        assert!(intersect(vec![Value::Null, l(vec![])]).is_err());
+        assert!(intersect(vec![l(vec![]), Value::Null]).is_err());
+        assert!(intersect(vec![Value::Int(1), l(vec![])]).is_err());
+        assert!(intersect(vec![Value::Int(1), Value::Int(2)]).is_err());
+
+        assert_eq!(
+            difference(vec![
+                l(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+                l(vec![Value::Int(2)]),
+            ])
+            .unwrap(),
+            l(vec![Value::Int(1), Value::Int(3)])
+        );
+        assert!(difference(vec![Value::Null, l(vec![])]).is_err());
+        assert!(difference(vec![l(vec![]), Value::Null]).is_err());
+        assert!(difference(vec![Value::Int(1), l(vec![])]).is_err());
+        assert!(difference(vec![Value::Int(1), Value::Int(2)]).is_err());
+
+        let r = disjunct(vec![
+            l(vec![Value::Int(1), Value::Int(2)]),
+            l(vec![Value::Int(2), Value::Int(3)]),
+        ])
+        .unwrap();
+        if let Value::List(items) = r {
+            assert!(items.contains(&Value::Int(1)));
+            assert!(items.contains(&Value::Int(3)));
+        }
+        assert!(disjunct(vec![Value::Null, l(vec![])]).is_err());
+        assert!(disjunct(vec![l(vec![]), Value::Null]).is_err());
+        assert!(disjunct(vec![Value::Int(1), l(vec![])]).is_err());
+        assert!(disjunct(vec![Value::Int(1), Value::Int(2)]).is_err());
+    }
+
+    #[test]
+    fn product_basic_and_empty() {
+        let r = product(vec![
+            l(vec![Value::Int(1), Value::Int(2)]),
+            l(vec![Value::Int(10), Value::Int(20)]),
+        ])
+        .unwrap();
+        assert_eq!(
+            r,
+            l(vec![
+                l(vec![Value::Int(1), Value::Int(10)]),
+                l(vec![Value::Int(1), Value::Int(20)]),
+                l(vec![Value::Int(2), Value::Int(10)]),
+                l(vec![Value::Int(2), Value::Int(20)]),
+            ])
+        );
+        assert_eq!(
+            product(vec![l(vec![]), l(vec![Value::Int(1)])]).unwrap(),
+            l(vec![])
+        );
+        assert!(product(vec![Value::Null, l(vec![])]).is_err());
+        assert!(product(vec![l(vec![]), Value::Null]).is_err());
+        assert!(product(vec![Value::Int(1), l(vec![])]).is_err());
+        assert!(product(vec![Value::Int(1), Value::Int(2)]).is_err());
+    }
+
+    #[test]
+    fn all_any_none_pred() {
+        // pred default ("neq" with Null) returns true for non-null elements
+        assert_eq!(
+            all(vec![l(vec![Value::Int(1), Value::Int(2)])]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            any(vec![l(vec![Value::Int(1), Value::Int(2)])]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            none(vec![l(vec![Value::Int(1), Value::Int(2)])]).unwrap(),
+            Value::Bool(false)
+        );
+        // empty list: all → true, any → false, none → true
+        assert_eq!(all(vec![l(vec![])]).unwrap(), Value::Bool(true));
+        assert_eq!(any(vec![l(vec![])]).unwrap(), Value::Bool(false));
+        assert_eq!(none(vec![l(vec![])]).unwrap(), Value::Bool(true));
+        // non-list scalar
+        assert_eq!(all(vec![Value::Int(1)]).unwrap(), Value::Bool(false));
+        assert_eq!(any(vec![Value::Int(1)]).unwrap(), Value::Bool(false));
+        assert_eq!(none(vec![Value::Int(1)]).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn wraplist_and_value_helpers() {
+        assert_eq!(
+            wraplist(vec![Value::Int(7)]).unwrap(),
+            l(vec![Value::Int(7)])
+        );
+        assert_eq!(wraplist(vec![]).unwrap(), l(vec![]));
+    }
+
+    #[test]
+    fn valuemap_wraps_singletons_and_flattens_multivalue() {
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("name".into(), Value::Str("alice".into()));
+        // multi-property: list of maps with "value"
+        let mut p1 = IndexMap::<Box<str>, Value>::new();
+        p1.insert("value".into(), Value::Int(1));
+        let mut p2 = IndexMap::<Box<str>, Value>::new();
+        p2.insert("value".into(), Value::Int(2));
+        m.insert("scores".into(), l(vec![Value::Map(p1), Value::Map(p2)]));
+        let out = valuemap(vec![Value::Map(m)]).unwrap();
+        if let Value::Map(out) = out {
+            assert_eq!(out.get("name"), Some(&l(vec![Value::Str("alice".into())])));
+            assert_eq!(
+                out.get("scores"),
+                Some(&l(vec![Value::Int(1), Value::Int(2)]))
+            );
+        } else {
+            panic!("expected map");
+        }
+        // non-map passes through
+        assert_eq!(valuemap(vec![Value::Int(7)]).unwrap(), Value::Int(7));
+        assert_eq!(valuemap(vec![]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn valuemap_unfold_unwraps_singletons() {
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("a".into(), l(vec![Value::Int(7)]));
+        m.insert("b".into(), l(vec![Value::Int(1), Value::Int(2)]));
+        let out = valuemap_unfold(vec![Value::Map(m)]).unwrap();
+        if let Value::Map(out) = out {
+            assert_eq!(out.get("a"), Some(&Value::Int(7)));
+            assert_eq!(out.get("b"), Some(&l(vec![Value::Int(1), Value::Int(2)])));
+        }
+        assert_eq!(valuemap_unfold(vec![Value::Int(7)]).unwrap(), Value::Int(7));
+        assert_eq!(valuemap_unfold(vec![]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn values_all_variants() {
+        // Map with ~value tag
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("~value".into(), Value::Int(7));
+        assert_eq!(
+            values_all(vec![Value::Map(m)]).unwrap(),
+            l(vec![Value::Int(7)])
+        );
+        // Map without ~value -> all values
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("a".into(), Value::Int(1));
+        m.insert("b".into(), Value::Int(2));
+        assert_eq!(
+            values_all(vec![Value::Map(m)]).unwrap(),
+            l(vec![Value::Int(1), Value::Int(2)])
+        );
+        // Null/None
+        assert_eq!(values_all(vec![Value::Null]).unwrap(), l(vec![]));
+        assert_eq!(values_all(vec![]).unwrap(), l(vec![]));
+        // Other scalar
+        assert_eq!(
+            values_all(vec![Value::Int(7)]).unwrap(),
+            l(vec![Value::Int(7)])
+        );
+    }
+}

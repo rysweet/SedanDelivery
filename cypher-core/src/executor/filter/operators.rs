@@ -542,3 +542,666 @@ pub(crate) fn cypher_compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering,
         })),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Expr;
+    use std::collections::HashMap;
+
+    fn empty_row<'a>() -> Row<'a> {
+        HashMap::new()
+    }
+    fn lit_i(n: i64) -> Expr {
+        Expr::Integer(n)
+    }
+    fn lit_f(n: f64) -> Expr {
+        Expr::Float(n)
+    }
+    fn lit_s(s: &str) -> Expr {
+        Expr::Str(s.into())
+    }
+    fn lit_b(b: bool) -> Expr {
+        Expr::Bool(b)
+    }
+    fn lit_null() -> Expr {
+        Expr::Null
+    }
+    fn bin(op: BinaryOp, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        }
+    }
+    fn una(op: UnaryOp, e: Expr) -> Expr {
+        Expr::UnaryOp {
+            op,
+            expr: Box::new(e),
+        }
+    }
+    fn run(e: &Expr) -> Result<Value, GqlError> {
+        eval_expr(e, &empty_row())
+    }
+
+    // ── Unary ─────────────────────────────────────────────────────────
+    #[test]
+    fn neg_int() {
+        assert_eq!(run(&una(UnaryOp::Neg, lit_i(5))).unwrap(), Value::Int(-5));
+    }
+    #[test]
+    fn neg_float() {
+        assert_eq!(
+            run(&una(UnaryOp::Neg, lit_f(1.5))).unwrap(),
+            Value::Float(-1.5)
+        );
+    }
+    #[test]
+    fn neg_null() {
+        assert_eq!(run(&una(UnaryOp::Neg, lit_null())).unwrap(), Value::Null);
+    }
+    #[test]
+    fn neg_overflow() {
+        assert!(run(&una(UnaryOp::Neg, lit_i(i64::MIN))).is_err());
+    }
+    #[test]
+    fn neg_string_errs() {
+        assert!(run(&una(UnaryOp::Neg, lit_s("a"))).is_err());
+    }
+    #[test]
+    fn not_bool() {
+        assert_eq!(
+            run(&una(UnaryOp::Not, lit_b(true))).unwrap(),
+            Value::Bool(false)
+        );
+    }
+    #[test]
+    fn not_null() {
+        assert_eq!(run(&una(UnaryOp::Not, lit_null())).unwrap(), Value::Null);
+    }
+    #[test]
+    fn not_int_errs() {
+        assert!(run(&una(UnaryOp::Not, lit_i(0))).is_err());
+    }
+
+    // ── AND / OR / XOR ───────────────────────────────────────────────
+    #[test]
+    fn and_true_false() {
+        assert_eq!(
+            run(&bin(BinaryOp::And, lit_b(true), lit_b(false))).unwrap(),
+            Value::Bool(false)
+        );
+    }
+    #[test]
+    fn and_short_circuit_false() {
+        assert_eq!(
+            run(&bin(BinaryOp::And, lit_b(false), lit_i(99))).unwrap(),
+            Value::Bool(false)
+        );
+    }
+    #[test]
+    fn and_null_false() {
+        assert_eq!(
+            run(&bin(BinaryOp::And, lit_null(), lit_b(false))).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::And, lit_b(false), lit_null())).unwrap(),
+            Value::Bool(false)
+        );
+    }
+    #[test]
+    fn and_null_true() {
+        assert_eq!(
+            run(&bin(BinaryOp::And, lit_null(), lit_b(true))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn and_type_err() {
+        assert!(run(&bin(BinaryOp::And, lit_i(1), lit_b(true))).is_err());
+    }
+    #[test]
+    fn or_short_circuit_true() {
+        assert_eq!(
+            run(&bin(BinaryOp::Or, lit_b(true), lit_i(99))).unwrap(),
+            Value::Bool(true)
+        );
+    }
+    #[test]
+    fn or_null_true() {
+        assert_eq!(
+            run(&bin(BinaryOp::Or, lit_null(), lit_b(true))).unwrap(),
+            Value::Bool(true)
+        );
+    }
+    #[test]
+    fn or_null_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Or, lit_null(), lit_b(false))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn or_type_err() {
+        assert!(run(&bin(BinaryOp::Or, lit_b(false), lit_i(1))).is_err());
+    }
+    #[test]
+    fn xor_basic() {
+        assert_eq!(
+            run(&bin(BinaryOp::Xor, lit_b(true), lit_b(false))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Xor, lit_b(true), lit_b(true))).unwrap(),
+            Value::Bool(false)
+        );
+    }
+    #[test]
+    fn xor_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Xor, lit_null(), lit_b(true))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn xor_type_err() {
+        assert!(run(&bin(BinaryOp::Xor, lit_i(1), lit_i(2))).is_err());
+    }
+
+    // ── Arithmetic ──────────────────────────────────────────────────────
+    #[test]
+    fn add_ints() {
+        assert_eq!(
+            run(&bin(BinaryOp::Add, lit_i(2), lit_i(3))).unwrap(),
+            Value::Int(5)
+        );
+    }
+    #[test]
+    fn add_int_overflow() {
+        assert!(run(&bin(BinaryOp::Add, lit_i(i64::MAX), lit_i(1))).is_err());
+    }
+    #[test]
+    fn add_floats_mixed() {
+        assert_eq!(
+            run(&bin(BinaryOp::Add, lit_f(1.5), lit_f(2.5))).unwrap(),
+            Value::Float(4.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Add, lit_i(2), lit_f(0.5))).unwrap(),
+            Value::Float(2.5)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Add, lit_f(0.5), lit_i(2))).unwrap(),
+            Value::Float(2.5)
+        );
+    }
+    #[test]
+    fn add_strings() {
+        assert_eq!(
+            run(&bin(BinaryOp::Add, lit_s("a"), lit_s("b"))).unwrap(),
+            Value::Str("ab".into())
+        );
+    }
+    #[test]
+    fn add_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Add, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn add_invalid_err() {
+        assert!(run(&bin(BinaryOp::Add, lit_b(true), lit_b(false))).is_err());
+    }
+    #[test]
+    fn add_list_list() {
+        let l = Expr::List(vec![lit_i(1)]);
+        let r = Expr::List(vec![lit_i(2)]);
+        assert_eq!(
+            run(&bin(BinaryOp::Add, l, r)).unwrap(),
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
+    }
+    #[test]
+    fn add_list_element() {
+        let l = Expr::List(vec![lit_i(1)]);
+        assert_eq!(
+            run(&bin(BinaryOp::Add, l, lit_i(2))).unwrap(),
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
+    }
+    #[test]
+    fn add_element_list() {
+        let r = Expr::List(vec![lit_i(2)]);
+        assert_eq!(
+            run(&bin(BinaryOp::Add, lit_i(1), r)).unwrap(),
+            Value::List(vec![Value::Int(1), Value::Int(2)])
+        );
+    }
+    #[test]
+    fn sub_ints() {
+        assert_eq!(
+            run(&bin(BinaryOp::Sub, lit_i(5), lit_i(3))).unwrap(),
+            Value::Int(2)
+        );
+    }
+    #[test]
+    fn sub_overflow() {
+        assert!(run(&bin(BinaryOp::Sub, lit_i(i64::MIN), lit_i(1))).is_err());
+    }
+    #[test]
+    fn sub_mixed_float() {
+        assert_eq!(
+            run(&bin(BinaryOp::Sub, lit_f(2.5), lit_i(1))).unwrap(),
+            Value::Float(1.5)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Sub, lit_i(2), lit_f(0.5))).unwrap(),
+            Value::Float(1.5)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Sub, lit_f(2.5), lit_f(0.5))).unwrap(),
+            Value::Float(2.0)
+        );
+    }
+    #[test]
+    fn sub_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Sub, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn sub_invalid() {
+        assert!(run(&bin(BinaryOp::Sub, lit_s("a"), lit_s("b"))).is_err());
+    }
+    #[test]
+    fn mul_ints() {
+        assert_eq!(
+            run(&bin(BinaryOp::Mul, lit_i(2), lit_i(3))).unwrap(),
+            Value::Int(6)
+        );
+    }
+    #[test]
+    fn mul_overflow() {
+        assert!(run(&bin(BinaryOp::Mul, lit_i(i64::MAX), lit_i(2))).is_err());
+    }
+    #[test]
+    fn mul_floats_mixed() {
+        assert_eq!(
+            run(&bin(BinaryOp::Mul, lit_f(1.5), lit_f(2.0))).unwrap(),
+            Value::Float(3.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Mul, lit_i(2), lit_f(0.5))).unwrap(),
+            Value::Float(1.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Mul, lit_f(0.5), lit_i(2))).unwrap(),
+            Value::Float(1.0)
+        );
+    }
+    #[test]
+    fn mul_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Mul, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn mul_invalid() {
+        assert!(run(&bin(BinaryOp::Mul, lit_s("a"), lit_s("b"))).is_err());
+    }
+    #[test]
+    fn div_ints() {
+        assert_eq!(
+            run(&bin(BinaryOp::Div, lit_i(10), lit_i(3))).unwrap(),
+            Value::Int(3)
+        );
+    }
+    #[test]
+    fn div_int_by_zero() {
+        assert!(run(&bin(BinaryOp::Div, lit_i(1), lit_i(0))).is_err());
+    }
+    #[test]
+    fn div_floats_mixed() {
+        assert_eq!(
+            run(&bin(BinaryOp::Div, lit_f(1.0), lit_f(2.0))).unwrap(),
+            Value::Float(0.5)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Div, lit_i(1), lit_f(2.0))).unwrap(),
+            Value::Float(0.5)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Div, lit_f(1.0), lit_i(2))).unwrap(),
+            Value::Float(0.5)
+        );
+    }
+    #[test]
+    fn div_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Div, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn div_invalid() {
+        assert!(run(&bin(BinaryOp::Div, lit_s("a"), lit_s("b"))).is_err());
+    }
+    #[test]
+    fn mod_ints() {
+        assert_eq!(
+            run(&bin(BinaryOp::Mod, lit_i(10), lit_i(3))).unwrap(),
+            Value::Int(1)
+        );
+    }
+    #[test]
+    fn mod_int_by_zero() {
+        assert!(run(&bin(BinaryOp::Mod, lit_i(1), lit_i(0))).is_err());
+    }
+    #[test]
+    fn mod_floats_mixed() {
+        assert_eq!(
+            run(&bin(BinaryOp::Mod, lit_f(5.0), lit_f(3.0))).unwrap(),
+            Value::Float(2.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Mod, lit_i(5), lit_f(3.0))).unwrap(),
+            Value::Float(2.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Mod, lit_f(5.0), lit_i(3))).unwrap(),
+            Value::Float(2.0)
+        );
+    }
+    #[test]
+    fn mod_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Mod, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn mod_invalid() {
+        assert!(run(&bin(BinaryOp::Mod, lit_s("a"), lit_s("b"))).is_err());
+    }
+    #[test]
+    fn pow_variants() {
+        assert_eq!(
+            run(&bin(BinaryOp::Pow, lit_i(2), lit_i(3))).unwrap(),
+            Value::Float(8.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Pow, lit_f(2.0), lit_f(3.0))).unwrap(),
+            Value::Float(8.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Pow, lit_i(2), lit_f(3.0))).unwrap(),
+            Value::Float(8.0)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Pow, lit_f(2.0), lit_i(3))).unwrap(),
+            Value::Float(8.0)
+        );
+    }
+    #[test]
+    fn pow_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Pow, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn pow_invalid() {
+        assert!(run(&bin(BinaryOp::Pow, lit_s("a"), lit_s("b"))).is_err());
+    }
+
+    // ── Comparison ──────────────────────────────────────────────────────
+    #[test]
+    fn eq_neq() {
+        assert_eq!(
+            run(&bin(BinaryOp::Eq, lit_i(1), lit_i(1))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Neq, lit_i(1), lit_i(2))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Eq, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn lt_lte_gt_gte() {
+        assert_eq!(
+            run(&bin(BinaryOp::Lt, lit_i(1), lit_i(2))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Lte, lit_i(2), lit_i(2))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Gt, lit_i(3), lit_i(2))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Gte, lit_i(2), lit_i(2))).unwrap(),
+            Value::Bool(true)
+        );
+    }
+    #[test]
+    fn cmp_with_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Lt, lit_null(), lit_i(1))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn cmp_with_nan() {
+        assert_eq!(
+            run(&bin(BinaryOp::Lt, lit_f(f64::NAN), lit_i(1))).unwrap(),
+            Value::Bool(false)
+        );
+        // NaN vs non-numeric → null
+        assert_eq!(
+            run(&bin(BinaryOp::Lt, lit_f(f64::NAN), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn cmp_cross_type_returns_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::Lt, lit_i(1), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+    }
+
+    // ── String predicates ──────────────────────────────────────────────
+    #[test]
+    fn starts_with_basic() {
+        assert_eq!(
+            run(&bin(BinaryOp::StartsWith, lit_s("abc"), lit_s("ab"))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::StartsWith, lit_null(), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::StartsWith, lit_i(1), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn ends_with_basic() {
+        assert_eq!(
+            run(&bin(BinaryOp::EndsWith, lit_s("abc"), lit_s("bc"))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::EndsWith, lit_null(), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::EndsWith, lit_i(1), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn contains_basic() {
+        assert_eq!(
+            run(&bin(BinaryOp::Contains, lit_s("hello world"), lit_s("o w"))).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Contains, lit_null(), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::Contains, lit_i(1), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn regex_match() {
+        assert_eq!(
+            run(&bin(BinaryOp::RegexMatch, lit_s("hello"), lit_s("h.*o"))).unwrap(),
+            Value::Bool(true)
+        );
+        // anchored: must match entire string
+        assert_eq!(
+            run(&bin(
+                BinaryOp::RegexMatch,
+                lit_s("hello world"),
+                lit_s("h.*o")
+            ))
+            .unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            run(&bin(BinaryOp::RegexMatch, lit_null(), lit_s("a"))).unwrap(),
+            Value::Null
+        );
+        assert!(run(&bin(BinaryOp::RegexMatch, lit_i(1), lit_s("a"))).is_err());
+        // bad pattern
+        assert!(run(&bin(BinaryOp::RegexMatch, lit_s("a"), lit_s("("))).is_err());
+    }
+
+    // ── IN operator ─────────────────────────────────────────────────────
+    #[test]
+    fn in_basic_true() {
+        let l = Expr::List(vec![lit_i(1), lit_i(2), lit_i(3)]);
+        assert_eq!(
+            run(&bin(BinaryOp::In, lit_i(2), l)).unwrap(),
+            Value::Bool(true)
+        );
+    }
+    #[test]
+    fn in_basic_false() {
+        let l = Expr::List(vec![lit_i(1), lit_i(2)]);
+        assert_eq!(
+            run(&bin(BinaryOp::In, lit_i(99), l)).unwrap(),
+            Value::Bool(false)
+        );
+    }
+    #[test]
+    fn in_with_null_in_list() {
+        let l = Expr::List(vec![lit_i(1), lit_null()]);
+        assert_eq!(run(&bin(BinaryOp::In, lit_i(99), l)).unwrap(), Value::Null);
+    }
+    #[test]
+    fn in_null_value() {
+        let l_empty = Expr::List(vec![]);
+        assert_eq!(
+            run(&bin(BinaryOp::In, lit_null(), l_empty)).unwrap(),
+            Value::Bool(false)
+        );
+        let l_nonempty = Expr::List(vec![lit_i(1)]);
+        assert_eq!(
+            run(&bin(BinaryOp::In, lit_null(), l_nonempty)).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn in_rhs_null() {
+        assert_eq!(
+            run(&bin(BinaryOp::In, lit_i(1), lit_null())).unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn in_rhs_not_list_errs() {
+        assert!(run(&bin(BinaryOp::In, lit_i(1), lit_i(1))).is_err());
+    }
+
+    // ── safe_int_float_cmp / cypher_compare ────────────────────────────
+    #[test]
+    fn safe_int_float_basic() {
+        use std::cmp::Ordering;
+        assert_eq!(safe_int_float_cmp(1, 2.0), Some(Ordering::Less));
+        assert_eq!(safe_int_float_cmp(2, 2.0), Some(Ordering::Equal));
+        assert_eq!(safe_int_float_cmp(3, 2.0), Some(Ordering::Greater));
+        assert_eq!(safe_int_float_cmp(1, f64::NAN), None);
+    }
+    #[test]
+    fn safe_int_float_large_int() {
+        use std::cmp::Ordering;
+        // 2^60 > 2^53, exceeds float precision when cast.
+        let big = 1_i64 << 60;
+        // Float much greater than i64::MAX
+        assert_eq!(safe_int_float_cmp(big, f64::INFINITY), Some(Ordering::Less));
+        assert_eq!(
+            safe_int_float_cmp(big, f64::NEG_INFINITY),
+            Some(Ordering::Greater)
+        );
+        // Float well above i64::MAX is still > big
+        assert_eq!(safe_int_float_cmp(big, 1.0e30), Some(Ordering::Less));
+        // Float well below i64::MIN
+        assert_eq!(safe_int_float_cmp(big, -1.0e30), Some(Ordering::Greater));
+    }
+    #[test]
+    fn cypher_compare_strs_bools_dates() {
+        use std::cmp::Ordering;
+        assert_eq!(
+            cypher_compare(&Value::Str("a".into()), &Value::Str("b".into())).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            cypher_compare(&Value::Bool(false), &Value::Bool(true)).unwrap(),
+            Ordering::Less
+        );
+        let d1 = Value::Date(jiff::civil::Date::new(2024, 1, 1).unwrap());
+        let d2 = Value::Date(jiff::civil::Date::new(2024, 2, 1).unwrap());
+        assert_eq!(cypher_compare(&d1, &d2).unwrap(), Ordering::Less);
+    }
+    #[test]
+    fn cypher_compare_lists() {
+        use std::cmp::Ordering;
+        let a = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let b = Value::List(vec![Value::Int(1), Value::Int(3)]);
+        assert_eq!(cypher_compare(&a, &b).unwrap(), Ordering::Less);
+        let c = Value::List(vec![Value::Int(1)]);
+        let d = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(cypher_compare(&c, &d).unwrap(), Ordering::Less);
+    }
+    #[test]
+    fn cypher_compare_int_float_with_nan() {
+        use std::cmp::Ordering;
+        assert_eq!(
+            cypher_compare(&Value::Int(1), &Value::Float(f64::NAN)).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            cypher_compare(&Value::Float(f64::NAN), &Value::Int(1)).unwrap(),
+            Ordering::Greater
+        );
+    }
+    #[test]
+    fn cypher_compare_incompatible_errs() {
+        assert!(cypher_compare(&Value::Int(1), &Value::Str("a".into())).is_err());
+    }
+}

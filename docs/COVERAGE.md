@@ -16,7 +16,7 @@ added accompanying eval tests.
 
 | Crate                     |   Line% | Function% | Files tested | Target |
 | ------------------------- | ------: | --------: | -----------: | -----: |
-| `cypher-core`             | **58.73%** |    62.54% |          106 |    70% |
+| `cypher-core`             | **69.70%** |    74.11% |          106 |    70% |
 | `gql-engine`              | **78.35%** |    85.71% |            5 |    70% |
 | `gremlin-core`            | **71.92%** |    79.75% |           40 |    70% |
 | `sedan-cypher-embedded`   | **65.48%** |    60.00% |            1 |    70% |
@@ -32,9 +32,13 @@ Crates already above the 70% line-coverage target: `gql-engine`,
 `gremlin-core` (44.05% → 58.97% → 56.65%, +12.60pt net) driven by #1353 + #1355,
 with a small artifactual dip from the helpers/ submodule split (file-boundary
 instrumentation, no behavior change);
-`cypher-core` ticked down very slightly (59.13% → 58.73%) because the
-#1357 `eval.rs` decomposition exposed previously-aggregated low-coverage
-gremlin-funcs files (see hot-spot table) without changing test behaviour.
+`cypher-core` recovered substantially in this PR (58.73% → 69.70%, +10.97pt)
+by adding inline `#[cfg(test)]` tests to the lowest-coverage modules exposed
+by the #1357 / #1376 / #1378 decompositions: `storage/cached.rs`,
+`changelog.rs`, `executor/filter/builtins.rs`, `executor/filter/operators.rs`,
+`executor/filter/geo.rs`, `executor/filter/temporal/properties.rs`, and the
+entire `executor/filter/temporal/{constructors,truncation,arithmetic}` tree.
+All additions are pure additive tests; no production code changed.
 
 ### Top gap modules (highest-LOC files pulling line% down)
 

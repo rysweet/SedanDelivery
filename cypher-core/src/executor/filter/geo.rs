@@ -96,3 +96,162 @@ pub(super) fn eval_point_constructor(vals: &[Value]) -> Result<Value, GqlError> 
 
     Ok(Value::Point(GeoPoint { x, y, z, crs }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indexmap::IndexMap;
+
+    fn pt(pairs: &[(&str, Value)]) -> Vec<Value> {
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        for (k, v) in pairs {
+            m.insert((*k).into(), v.clone());
+        }
+        vec![Value::Map(m)]
+    }
+
+    #[test]
+    fn point_xy_cartesian() {
+        if let Value::Point(p) =
+            eval_point_constructor(&pt(&[("x", Value::Float(1.0)), ("y", Value::Int(2))])).unwrap()
+        {
+            assert_eq!(p.x, 1.0);
+            assert_eq!(p.y, 2.0);
+            assert!(p.z.is_none());
+            assert!(matches!(p.crs, Crs::Cartesian));
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn point_xyz_cartesian3d() {
+        if let Value::Point(p) = eval_point_constructor(&pt(&[
+            ("x", Value::Float(1.0)),
+            ("y", Value::Float(2.0)),
+            ("z", Value::Float(3.0)),
+        ]))
+        .unwrap()
+        {
+            assert_eq!(p.z, Some(3.0));
+            assert!(matches!(p.crs, Crs::Cartesian3d));
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn point_lonlat_wgs84() {
+        if let Value::Point(p) = eval_point_constructor(&pt(&[
+            ("longitude", Value::Float(10.0)),
+            ("latitude", Value::Float(20.0)),
+        ]))
+        .unwrap()
+        {
+            assert!(matches!(p.crs, Crs::Wgs84));
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn point_lonlat_height_wgs843d() {
+        if let Value::Point(p) = eval_point_constructor(&pt(&[
+            ("longitude", Value::Float(10.0)),
+            ("latitude", Value::Float(20.0)),
+            ("height", Value::Float(100.0)),
+        ]))
+        .unwrap()
+        {
+            assert!(matches!(p.crs, Crs::Wgs843d));
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn point_explicit_srid_overrides() {
+        for (srid, want) in [
+            (4326i64, Crs::Wgs84),
+            (4979, Crs::Wgs843d),
+            (7203, Crs::Cartesian),
+            (9157, Crs::Cartesian3d),
+        ] {
+            if let Value::Point(p) = eval_point_constructor(&pt(&[
+                ("x", Value::Float(1.0)),
+                ("y", Value::Float(2.0)),
+                ("srid", Value::Int(srid)),
+            ]))
+            .unwrap()
+            {
+                assert_eq!(
+                    std::mem::discriminant(&p.crs),
+                    std::mem::discriminant(&want)
+                );
+            } else {
+                panic!()
+            }
+        }
+    }
+    #[test]
+    fn point_srid_float_accepted() {
+        if let Value::Point(p) = eval_point_constructor(&pt(&[
+            ("x", Value::Float(1.0)),
+            ("y", Value::Float(2.0)),
+            ("srid", Value::Float(4326.0)),
+        ]))
+        .unwrap()
+        {
+            assert!(matches!(p.crs, Crs::Wgs84));
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn point_invalid_srid_errs() {
+        assert!(eval_point_constructor(&pt(&[
+            ("x", Value::Float(1.0)),
+            ("y", Value::Float(2.0)),
+            ("srid", Value::Int(9999)),
+        ]))
+        .is_err());
+    }
+    #[test]
+    fn point_missing_coords_errs() {
+        assert!(eval_point_constructor(&pt(&[("x", Value::Float(1.0))])).is_err());
+    }
+    #[test]
+    fn point_null_returns_null() {
+        assert_eq!(eval_point_constructor(&[Value::Null]).unwrap(), Value::Null);
+    }
+    #[test]
+    fn point_wrong_arity_errs() {
+        assert!(eval_point_constructor(&[]).is_err());
+        assert!(eval_point_constructor(&[Value::Null, Value::Null]).is_err());
+    }
+    #[test]
+    fn point_non_map_errs() {
+        assert!(eval_point_constructor(&[Value::Int(1)]).is_err());
+    }
+    #[test]
+    fn point_int_coords_cast_to_float() {
+        if let Value::Point(p) =
+            eval_point_constructor(&pt(&[("x", Value::Int(5)), ("y", Value::Int(7))])).unwrap()
+        {
+            assert_eq!(p.x, 5.0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn point_srid_nan_treated_as_no_override() {
+        // Non-finite float SRID is ignored; falls back to inferred CRS.
+        if let Value::Point(p) = eval_point_constructor(&pt(&[
+            ("x", Value::Float(1.0)),
+            ("y", Value::Float(2.0)),
+            ("srid", Value::Float(f64::NAN)),
+        ]))
+        .unwrap()
+        {
+            assert!(matches!(p.crs, Crs::Cartesian));
+        } else {
+            panic!()
+        }
+    }
+}

@@ -650,9 +650,122 @@ mod tests {
         )));
     }
     #[test]
-    fn has_date_lt() {
-        assert!(!has_date_component(&Value::LocalTime(
-            jiff::civil::Time::new(10, 0, 0, 0).unwrap()
+    fn between_datetimes() {
+        let z1: jiff::Zoned = "2024-01-01T00:00:00+00:00[UTC]".parse().unwrap();
+        let z2: jiff::Zoned = "2024-06-01T12:00:00+00:00[UTC]".parse().unwrap();
+        match eval_duration_between(&[Value::DateTime(Box::new(z1)), Value::DateTime(Box::new(z2))])
+            .unwrap()
+        {
+            Value::Duration(d) => assert_eq!(d.months, 5),
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn between_localdatetimes() {
+        let dt1 = jiff::civil::DateTime::new(2024, 1, 1, 0, 0, 0, 0).unwrap();
+        let dt2 = jiff::civil::DateTime::new(2024, 1, 2, 0, 0, 0, 0).unwrap();
+        match eval_duration_between(&[Value::LocalDateTime(dt1), Value::LocalDateTime(dt2)])
+            .unwrap()
+        {
+            Value::Duration(d) => assert!(d.days >= 0),
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn between_local_times() {
+        let t1 = Value::LocalTime(jiff::civil::Time::new(10, 0, 0, 0).unwrap());
+        let t2 = Value::LocalTime(jiff::civil::Time::new(12, 0, 0, 0).unwrap());
+        match eval_duration_between(&[t1, t2]).unwrap() {
+            Value::Duration(d) => assert!(d.nanos > 0),
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn between_zoned_times() {
+        let t1 = Value::Time(jiff::civil::Time::new(10, 0, 0, 0).unwrap(), 0);
+        let t2 = Value::Time(jiff::civil::Time::new(12, 0, 0, 0).unwrap(), 0);
+        match eval_duration_between(&[t1, t2]).unwrap() {
+            Value::Duration(d) => assert!(d.nanos > 0),
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn between_too_few_args_errs() {
+        assert!(eval_duration_between(&[]).is_err());
+    }
+    #[test]
+    fn in_months_too_few_args_errs() {
+        assert!(eval_duration_in_months(&[]).is_err());
+    }
+    #[test]
+    fn in_days_too_few_args_errs() {
+        assert!(eval_duration_in_days(&[]).is_err());
+    }
+    #[test]
+    fn in_seconds_too_few_args_errs() {
+        assert!(eval_duration_in_seconds(&[]).is_err());
+    }
+    #[test]
+    fn in_seconds_null_first_arg() {
+        assert_eq!(
+            eval_duration_in_seconds(&[
+                Value::LocalDateTime(jiff::civil::DateTime::new(2024, 1, 1, 0, 0, 0, 0).unwrap()),
+                Value::Null
+            ])
+            .unwrap(),
+            Value::Null
+        );
+    }
+    #[test]
+    fn in_months_datetimes() {
+        let z1: jiff::Zoned = "2024-01-01T00:00:00+00:00[UTC]".parse().unwrap();
+        let z2: jiff::Zoned = "2024-04-01T00:00:00+00:00[UTC]".parse().unwrap();
+        match eval_duration_in_months(&[
+            Value::DateTime(Box::new(z1)),
+            Value::DateTime(Box::new(z2)),
+        ])
+        .unwrap()
+        {
+            Value::Duration(d) => assert_eq!(d.months, 3),
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn in_days_datetimes() {
+        let z1: jiff::Zoned = "2024-01-01T00:00:00+00:00[UTC]".parse().unwrap();
+        let z2: jiff::Zoned = "2024-01-08T00:00:00+00:00[UTC]".parse().unwrap();
+        match eval_duration_in_days(&[Value::DateTime(Box::new(z1)), Value::DateTime(Box::new(z2))])
+            .unwrap()
+        {
+            Value::Duration(d) => assert_eq!(d.days, 7),
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn in_seconds_datetimes() {
+        let z1: jiff::Zoned = "2024-01-01T00:00:00+00:00[UTC]".parse().unwrap();
+        let z2: jiff::Zoned = "2024-01-01T00:01:00+00:00[UTC]".parse().unwrap();
+        match eval_duration_in_seconds(&[
+            Value::DateTime(Box::new(z1)),
+            Value::DateTime(Box::new(z2)),
+        ])
+        .unwrap()
+        {
+            Value::Duration(d) => assert!(d.nanos > 0),
+            _ => panic!(),
+        }
+    }
+    #[test]
+    fn is_time_only_zoned_time() {
+        assert!(is_time_only(&Value::Time(
+            jiff::civil::Time::new(0, 0, 0, 0).unwrap(),
+            0
+        )));
+    }
+    #[test]
+    fn has_date_localdatetime() {
+        assert!(has_date_component(&Value::LocalDateTime(
+            jiff::civil::DateTime::new(2024, 1, 1, 0, 0, 0, 0).unwrap()
         )));
     }
 }

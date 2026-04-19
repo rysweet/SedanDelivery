@@ -106,4 +106,81 @@ mod tests {
             Value::Null
         );
     }
+
+    #[test]
+    fn dur_too_many_args_errs() {
+        assert!(eval_duration_constructor(&[Value::Null, Value::Null]).is_err());
+    }
+    #[test]
+    fn dur_from_int_errs() {
+        assert!(eval_duration_constructor(&[Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn dur_from_map_full() {
+        let mut m = indexmap::IndexMap::<Box<str>, Value>::new();
+        m.insert("years".into(), Value::Int(1));
+        m.insert("months".into(), Value::Int(2));
+        m.insert("weeks".into(), Value::Int(1));
+        m.insert("days".into(), Value::Int(3));
+        m.insert("hours".into(), Value::Int(4));
+        m.insert("minutes".into(), Value::Int(5));
+        m.insert("seconds".into(), Value::Int(6));
+        m.insert("milliseconds".into(), Value::Int(7));
+        m.insert("microseconds".into(), Value::Int(8));
+        m.insert("nanoseconds".into(), Value::Int(9));
+        if let Value::Duration(d) = eval_duration_constructor(&[Value::Map(m)]).unwrap() {
+            assert_eq!(d.months, 14);
+            assert_eq!(d.days, 10);
+            assert!(d.nanos > 0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn dur_from_map_singular_keys() {
+        let mut m = indexmap::IndexMap::<Box<str>, Value>::new();
+        m.insert("year".into(), Value::Int(1));
+        m.insert("month".into(), Value::Int(2));
+        m.insert("week".into(), Value::Int(1));
+        m.insert("day".into(), Value::Int(3));
+        m.insert("hour".into(), Value::Int(4));
+        m.insert("minute".into(), Value::Int(5));
+        m.insert("second".into(), Value::Int(6));
+        m.insert("millisecond".into(), Value::Int(7));
+        m.insert("microsecond".into(), Value::Int(8));
+        m.insert("nanosecond".into(), Value::Int(9));
+        if let Value::Duration(d) = eval_duration_constructor(&[Value::Map(m)]).unwrap() {
+            assert_eq!(d.months, 14);
+            assert_eq!(d.days, 10);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn dur_from_map_floats_fractional() {
+        let mut m = indexmap::IndexMap::<Box<str>, Value>::new();
+        m.insert("years".into(), Value::Float(1.5));
+        m.insert("days".into(), Value::Float(0.5));
+        if let Value::Duration(d) = eval_duration_constructor(&[Value::Map(m)]).unwrap() {
+            assert_eq!(d.months, 18);
+            assert!(d.nanos > 0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn dur_from_map_empty() {
+        let m = indexmap::IndexMap::<Box<str>, Value>::new();
+        if let Value::Duration(d) = eval_duration_constructor(&[Value::Map(m)]).unwrap() {
+            assert_eq!(d.months, 0);
+            assert_eq!(d.days, 0);
+            assert_eq!(d.nanos, 0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn dur_invalid_string_errs() {
+        assert!(eval_duration_constructor(&[Value::Str("not-a-duration".into())]).is_err());
+    }
 }

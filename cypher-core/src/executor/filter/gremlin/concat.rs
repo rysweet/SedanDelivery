@@ -204,3 +204,115 @@ pub(crate) fn make_uuid(vals: Vec<Value>) -> Result<Value, GqlError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
+    #[test]
+    fn concat_scalars_and_skip_null() {
+        assert_eq!(concat(vec![s("a"), s("b")]).unwrap(), s("ab"));
+        assert_eq!(
+            concat(vec![
+                Value::Int(1),
+                s("-"),
+                Value::Float(2.5),
+                Value::Bool(true)
+            ])
+            .unwrap(),
+            s("1-2.5true")
+        );
+        // Null-only single arg
+        assert_eq!(concat(vec![Value::Null]).unwrap(), Value::Null);
+        // Null arg with others is skipped
+        assert_eq!(concat(vec![s("x"), Value::Null, s("y")]).unwrap(), s("xy"));
+        // Empty
+        assert_eq!(concat(vec![]).unwrap(), Value::Null);
+        // List as traverser → error
+        assert!(concat(vec![Value::List(vec![])]).is_err());
+    }
+
+    #[test]
+    fn conjoin_basic_and_errors() {
+        assert_eq!(
+            conjoin(vec![
+                Value::List(vec![s("a"), s("b"), Value::Int(1), Value::Null]),
+                s(", "),
+            ])
+            .unwrap(),
+            s("a, b, 1")
+        );
+        assert!(conjoin(vec![Value::Null, s(",")]).is_err());
+        assert!(conjoin(vec![Value::Int(1), s(",")]).is_err());
+        assert_eq!(conjoin(vec![Value::Int(1)]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn format_resolves_placeholders() {
+        let mut labels = IndexMap::<Box<str>, Value>::new();
+        labels.insert("env".into(), s("prod"));
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("name".into(), s("alice"));
+        // %{env} from labels, %{name} from traverser map
+        let r = format(vec![
+            Value::Map(m),
+            s("hi %{name} on %{env}"),
+            Value::Map(labels),
+        ])
+        .unwrap();
+        assert_eq!(r, s("hi alice on prod"));
+        // Unresolved %{...} -> Null
+        let r = format(vec![Value::Int(1), s("%{x}")]).unwrap();
+        assert_eq!(r, Value::Null);
+        // %s with scalar
+        assert_eq!(format(vec![Value::Int(7), s("v=%s")]).unwrap(), s("v=7"));
+        assert_eq!(format(vec![Value::Null, s("any")]).unwrap(), s("any"));
+        assert_eq!(format(vec![]).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn format_by_cycles_through_args() {
+        assert_eq!(
+            format_by(vec![Value::Int(0), s("[%{_}-%{_}]"), s("a"), s("b")]).unwrap(),
+            s("[a-b]")
+        );
+        // Null traverser
+        assert_eq!(
+            format_by(vec![Value::Null, s("anything")]).unwrap(),
+            Value::Null
+        );
+        // Too few args
+        assert_eq!(format_by(vec![Value::Int(1)]).unwrap(), Value::Null);
+        // Pattern not a string
+        assert_eq!(
+            format_by(vec![Value::Int(1), Value::Int(2)]).unwrap(),
+            Value::Null
+        );
+        // Null in by-args yields Null
+        assert_eq!(
+            format_by(vec![Value::Int(0), s("%{_}"), Value::Null]).unwrap(),
+            Value::Null
+        );
+        // Unresolved %{name} → Null
+        assert_eq!(
+            format_by(vec![Value::Int(0), s("%{name}"), s("a")]).unwrap(),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn make_datetime_and_uuid() {
+        let r = make_datetime(vec![s("2020-01-02T03:04:05Z")]).unwrap();
+        assert!(matches!(r, Value::DateTime(_)));
+        // Unparseable → original string back
+        assert_eq!(make_datetime(vec![s("nope")]).unwrap(), s("nope"));
+        assert_eq!(make_datetime(vec![Value::Int(1)]).unwrap(), Value::Null);
+
+        assert_eq!(make_uuid(vec![s("xyz")]).unwrap(), s("~uuid:xyz"));
+        assert_eq!(make_uuid(vec![Value::Int(1)]).unwrap(), Value::Null);
+    }
+}

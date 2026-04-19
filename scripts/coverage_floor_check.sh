@@ -10,7 +10,7 @@ set -uo pipefail
 
 # crate <space> floor%
 CRATES_AND_FLOORS=(
-  "cypher-core 58.5"
+  "cypher-core 68.5"
   "gql-engine 78.35"
   "gremlin-core 70.5"
   "sedan-cypher-embedded 65.48"

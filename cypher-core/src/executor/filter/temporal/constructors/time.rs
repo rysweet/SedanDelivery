@@ -270,4 +270,176 @@ mod tests {
             Value::Null
         );
     }
+
+    use indexmap::IndexMap;
+
+    #[test]
+    fn time_no_args() {
+        assert!(matches!(
+            eval_time_constructor(&[]).unwrap(),
+            Value::Time(_, _)
+        ));
+    }
+    #[test]
+    fn time_from_int_errs() {
+        assert!(eval_time_constructor(&[Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn time_from_localtime() {
+        let lt = Value::LocalTime(jiff::civil::Time::new(10, 0, 0, 0).unwrap());
+        if let Value::Time(_, off) = eval_time_constructor(&[lt]).unwrap() {
+            assert_eq!(off, 0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn time_from_time() {
+        let t = Value::Time(jiff::civil::Time::new(10, 0, 0, 0).unwrap(), 7200);
+        if let Value::Time(_, off) = eval_time_constructor(&[t]).unwrap() {
+            assert_eq!(off, 7200);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn time_from_localdatetime() {
+        let v = Value::LocalDateTime(jiff::civil::DateTime::new(2024, 1, 1, 10, 0, 0, 0).unwrap());
+        if let Value::Time(t, off) = eval_time_constructor(&[v]).unwrap() {
+            assert_eq!(t.hour(), 10);
+            assert_eq!(off, 0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn time_from_datetime() {
+        let z: jiff::Zoned = "2024-01-01T05:00:00+01:00[Europe/Berlin]".parse().unwrap();
+        if let Value::Time(_, off) = eval_time_constructor(&[Value::DateTime(Box::new(z))]).unwrap()
+        {
+            assert!(off != 0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn time_from_map_explicit_fields() {
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("hour".into(), Value::Int(15));
+        m.insert("minute".into(), Value::Int(30));
+        m.insert("second".into(), Value::Int(0));
+        if let Value::Time(t, _) = eval_time_constructor(&[Value::Map(m)]).unwrap() {
+            assert_eq!(t.hour(), 15);
+            assert_eq!(t.minute(), 30);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn time_from_map_with_nanos() {
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("hour".into(), Value::Int(1));
+        m.insert("millisecond".into(), Value::Int(1));
+        m.insert("microsecond".into(), Value::Int(2));
+        m.insert("nanosecond".into(), Value::Int(3));
+        assert!(matches!(
+            eval_time_constructor(&[Value::Map(m)]).unwrap(),
+            Value::Time(_, _)
+        ));
+    }
+    #[test]
+    fn time_from_map_with_timezone() {
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("hour".into(), Value::Int(1));
+        m.insert("timezone".into(), Value::Str("UTC".into()));
+        assert!(matches!(
+            eval_time_constructor(&[Value::Map(m)]).unwrap(),
+            Value::Time(_, _)
+        ));
+    }
+    #[test]
+    fn localtime_no_args() {
+        assert!(matches!(
+            eval_localtime_constructor(&[]).unwrap(),
+            Value::LocalTime(_)
+        ));
+    }
+    #[test]
+    fn localtime_too_many_args() {
+        assert!(eval_localtime_constructor(&[Value::Null, Value::Null]).is_err());
+    }
+    #[test]
+    fn localtime_from_int_errs() {
+        assert!(eval_localtime_constructor(&[Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn localtime_from_localtime() {
+        let v = Value::LocalTime(jiff::civil::Time::new(7, 0, 0, 0).unwrap());
+        if let Value::LocalTime(t) = eval_localtime_constructor(&[v]).unwrap() {
+            assert_eq!(t.hour(), 7);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn localtime_from_time() {
+        let v = Value::Time(jiff::civil::Time::new(7, 0, 0, 0).unwrap(), 3600);
+        if let Value::LocalTime(t) = eval_localtime_constructor(&[v]).unwrap() {
+            assert_eq!(t.hour(), 7);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn localtime_from_datetime() {
+        let z: jiff::Zoned = "2024-01-01T05:00:00+01:00[Europe/Berlin]".parse().unwrap();
+        if let Value::LocalTime(t) =
+            eval_localtime_constructor(&[Value::DateTime(Box::new(z))]).unwrap()
+        {
+            assert_eq!(t.hour(), 5);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn localtime_from_localdatetime() {
+        let v = Value::LocalDateTime(jiff::civil::DateTime::new(2024, 1, 1, 7, 0, 0, 0).unwrap());
+        if let Value::LocalTime(t) = eval_localtime_constructor(&[v]).unwrap() {
+            assert_eq!(t.hour(), 7);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn localtime_from_map() {
+        let mut m = IndexMap::<Box<str>, Value>::new();
+        m.insert("hour".into(), Value::Int(15));
+        m.insert("minute".into(), Value::Int(30));
+        if let Value::LocalTime(t) = eval_localtime_constructor(&[Value::Map(m)]).unwrap() {
+            assert_eq!(t.hour(), 15);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn realtime_time_works() {
+        // Note: builtin_temporal_realtime_time(vec![]) returns DateTime (legacy behavior).
+        assert!(matches!(
+            builtin_temporal_realtime_time(vec![]).unwrap(),
+            Value::DateTime(_)
+        ));
+        assert!(matches!(
+            builtin_temporal_realtime_localtime(vec![]).unwrap(),
+            Value::LocalTime(_)
+        ));
+        // Null short-circuits
+        assert_eq!(
+            builtin_temporal_realtime_time(vec![Value::Null]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            builtin_temporal_realtime_localtime(vec![Value::Null]).unwrap(),
+            Value::Null
+        );
+    }
 }

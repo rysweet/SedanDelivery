@@ -126,3 +126,167 @@ pub(crate) fn istype(vals: Vec<Value>) -> Result<Value, GqlError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(v: &str) -> Value {
+        Value::Str(v.into())
+    }
+
+    #[test]
+    fn containing_basic() {
+        assert_eq!(
+            containing(vec![s("hello"), s("ell")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            containing(vec![s("hello"), s("xyz")]).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(containing(vec![Value::Null, s("x")]).unwrap(), Value::Null);
+        assert_eq!(containing(vec![s("x"), Value::Null]).unwrap(), Value::Null);
+        assert_eq!(
+            containing(vec![Value::Int(1), Value::Int(2)]).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(containing(vec![]).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn startingwith_endingwith_basic() {
+        assert_eq!(
+            startingwith(vec![s("hello"), s("he")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            startingwith(vec![s("hello"), s("ho")]).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            startingwith(vec![Value::Null, s("h")]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            startingwith(vec![s("x"), Value::Null]).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            startingwith(vec![Value::Int(1), Value::Int(2)]).unwrap(),
+            Value::Bool(false)
+        );
+
+        assert_eq!(
+            endingwith(vec![s("hello"), s("lo")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            endingwith(vec![s("hello"), s("la")]).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(endingwith(vec![Value::Null, s("x")]).unwrap(), Value::Null);
+        assert_eq!(endingwith(vec![s("x"), Value::Null]).unwrap(), Value::Null);
+        assert_eq!(
+            endingwith(vec![Value::Int(1), Value::Int(2)]).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn regex_basic() {
+        assert_eq!(
+            regex(vec![s("abc123"), s(r"\d+")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(regex(vec![s("abc"), s(r"^x")]).unwrap(), Value::Bool(false));
+        // Invalid regex returns false
+        assert_eq!(
+            regex(vec![s("abc"), s(r"[invalid")]).unwrap(),
+            Value::Bool(false)
+        );
+        assert_eq!(regex(vec![Value::Null, s("x")]).unwrap(), Value::Null);
+        assert_eq!(regex(vec![s("x"), Value::Null]).unwrap(), Value::Null);
+        assert_eq!(
+            regex(vec![Value::Int(1), Value::Int(2)]).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn istype_known_and_aliases() {
+        assert_eq!(
+            istype(vec![Value::Int(1), s("integer")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Int(1), s("long")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Int(1), s("int")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Int(1), s("bigint")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Int(1), s("biginteger")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Float(1.0), s("double")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Float(1.0), s("float")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Float(1.0), s("bigdecimal")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![s("x"), s("string")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Bool(true), s("boolean")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Null, s("null")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::List(vec![]), s("list")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::List(vec![]), s("set")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::List(vec![]), s("path")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Map(IndexMap::new()), s("map")]).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            istype(vec![Value::Map(IndexMap::new()), s("tree")]).unwrap(),
+            Value::Bool(true)
+        );
+        // Unknown type → error
+        assert!(istype(vec![Value::Int(1), s("frobnicator")]).is_err());
+        // Mismatched
+        assert_eq!(
+            istype(vec![Value::Int(1), s("string")]).unwrap(),
+            Value::Bool(false)
+        );
+        // Bad arg shape
+        assert_eq!(istype(vec![Value::Int(1)]).unwrap(), Value::Bool(false));
+    }
+}

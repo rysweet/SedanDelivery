@@ -597,4 +597,297 @@ mod tests {
     fn extract_tz_fail() {
         assert!(extract_tz(&Value::Int(42)).is_none());
     }
+
+    // ── eval_*_truncate public function tests ─────────────────────────────
+
+    fn s(x: &str) -> Value {
+        Value::Str(x.into())
+    }
+
+    #[test]
+    fn date_truncate_year() {
+        let r = eval_date_truncate(&[s("year"), date_val(2024, 6, 15)]).unwrap();
+        assert_eq!(r, date_val(2024, 1, 1));
+    }
+    #[test]
+    fn date_truncate_century() {
+        let r = eval_date_truncate(&[s("century"), date_val(2024, 6, 15)]).unwrap();
+        if let Value::Date(d) = r {
+            assert_eq!(d.year(), 2000);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn date_truncate_decade() {
+        let r = eval_date_truncate(&[s("decade"), date_val(2024, 6, 15)]).unwrap();
+        if let Value::Date(d) = r {
+            assert_eq!(d.year(), 2020);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn date_truncate_with_overrides() {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("day".into(), Value::Int(15));
+        let r = eval_date_truncate(&[s("month"), date_val(2024, 6, 1), Value::Map(m)]).unwrap();
+        assert_eq!(r, date_val(2024, 6, 15));
+    }
+    #[test]
+    fn date_truncate_arity_errs() {
+        assert!(eval_date_truncate(&[]).is_err());
+        assert!(eval_date_truncate(&[s("year")]).is_err());
+        assert!(
+            eval_date_truncate(&[s("year"), date_val(2024, 1, 1), Value::Null, Value::Null])
+                .is_err()
+        );
+    }
+    #[test]
+    fn date_truncate_unit_not_string_errs() {
+        assert!(eval_date_truncate(&[Value::Int(0), date_val(2024, 1, 1)]).is_err());
+    }
+    #[test]
+    fn date_truncate_no_date_errs() {
+        assert!(eval_date_truncate(&[s("year"), Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn date_truncate_overrides_not_map_errs() {
+        assert!(eval_date_truncate(&[s("year"), date_val(2024, 1, 1), Value::Int(0)]).is_err());
+    }
+
+    #[test]
+    fn datetime_truncate_year_from_localdatetime() {
+        let r = eval_datetime_truncate(&[s("year"), ldt_val(2024, 6, 15, 12, 30, 45)]).unwrap();
+        assert!(matches!(r, Value::DateTime(_)));
+    }
+    #[test]
+    fn datetime_truncate_with_tz_override() {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("timezone".into(), Value::Str("UTC".into()));
+        let r = eval_datetime_truncate(&[s("day"), dt_val(2024, 6, 15, 12, 0, 0), Value::Map(m)])
+            .unwrap();
+        assert!(matches!(r, Value::DateTime(_)));
+    }
+    #[test]
+    fn datetime_truncate_keeps_input_tz() {
+        let r = eval_datetime_truncate(&[s("month"), dt_val(2024, 6, 15, 12, 0, 0)]).unwrap();
+        assert!(matches!(r, Value::DateTime(_)));
+    }
+    #[test]
+    fn datetime_truncate_arity_errs() {
+        assert!(eval_datetime_truncate(&[]).is_err());
+    }
+    #[test]
+    fn datetime_truncate_unit_errs() {
+        assert!(eval_datetime_truncate(&[Value::Int(0), dt_val(2024, 6, 15, 0, 0, 0)]).is_err());
+    }
+    #[test]
+    fn datetime_truncate_no_date_errs() {
+        assert!(eval_datetime_truncate(&[s("year"), Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn datetime_truncate_invalid_overrides_errs() {
+        assert!(
+            eval_datetime_truncate(&[s("year"), dt_val(2024, 6, 15, 0, 0, 0), Value::Int(0)])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn localdatetime_truncate_works() {
+        let r = eval_localdatetime_truncate(&[s("year"), ldt_val(2024, 6, 15, 12, 30, 0)]).unwrap();
+        assert!(matches!(r, Value::LocalDateTime(_)));
+    }
+    #[test]
+    fn localdatetime_truncate_with_overrides() {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("hour".into(), Value::Int(5));
+        let r = eval_localdatetime_truncate(&[
+            s("day"),
+            ldt_val(2024, 6, 15, 12, 30, 0),
+            Value::Map(m),
+        ])
+        .unwrap();
+        if let Value::LocalDateTime(dt) = r {
+            assert_eq!(dt.hour(), 5);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn localdatetime_truncate_arity_errs() {
+        assert!(eval_localdatetime_truncate(&[]).is_err());
+    }
+    #[test]
+    fn localdatetime_truncate_no_date_errs() {
+        assert!(eval_localdatetime_truncate(&[s("year"), Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn localdatetime_truncate_unit_errs() {
+        assert!(
+            eval_localdatetime_truncate(&[Value::Int(0), ldt_val(2024, 6, 15, 0, 0, 0)]).is_err()
+        );
+    }
+    #[test]
+    fn localdatetime_truncate_overrides_errs() {
+        assert!(eval_localdatetime_truncate(&[
+            s("year"),
+            ldt_val(2024, 6, 15, 0, 0, 0),
+            Value::Int(0)
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn localtime_truncate_works() {
+        let r = eval_localtime_truncate(&[s("hour"), lt_val(14, 30, 45)]).unwrap();
+        if let Value::LocalTime(t) = r {
+            assert_eq!(t.hour(), 14);
+            assert_eq!(t.minute(), 0);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn localtime_truncate_arity_errs() {
+        assert!(eval_localtime_truncate(&[]).is_err());
+    }
+    #[test]
+    fn localtime_truncate_unit_errs() {
+        assert!(eval_localtime_truncate(&[Value::Int(0), lt_val(1, 0, 0)]).is_err());
+    }
+    #[test]
+    fn localtime_truncate_no_time_errs() {
+        assert!(eval_localtime_truncate(&[s("hour"), Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn localtime_truncate_overrides_errs() {
+        assert!(eval_localtime_truncate(&[s("hour"), lt_val(1, 0, 0), Value::Int(0)]).is_err());
+    }
+
+    #[test]
+    fn time_truncate_works() {
+        let r = eval_time_truncate(&[s("minute"), time_val(14, 30, 45, 3600)]).unwrap();
+        if let Value::Time(t, off) = r {
+            assert_eq!(t.minute(), 30);
+            assert_eq!(t.second(), 0);
+            assert_eq!(off, 3600);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn time_truncate_with_tz_override() {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("timezone".into(), Value::Str("UTC".into()));
+        let r = eval_time_truncate(&[s("hour"), lt_val(14, 30, 45), Value::Map(m)]).unwrap();
+        assert!(matches!(r, Value::Time(_, _)));
+    }
+    #[test]
+    fn time_truncate_arity_errs() {
+        assert!(eval_time_truncate(&[]).is_err());
+    }
+    #[test]
+    fn time_truncate_unit_errs() {
+        assert!(eval_time_truncate(&[Value::Int(0), lt_val(1, 0, 0)]).is_err());
+    }
+    #[test]
+    fn time_truncate_no_time_errs() {
+        assert!(eval_time_truncate(&[s("hour"), Value::Int(0)]).is_err());
+    }
+    #[test]
+    fn time_truncate_overrides_errs() {
+        assert!(eval_time_truncate(&[s("hour"), lt_val(1, 0, 0), Value::Int(0)]).is_err());
+    }
+
+    #[test]
+    fn trunc_weekyear_works() {
+        let r =
+            truncate_date_fields(jiff::civil::Date::new(2024, 6, 15).unwrap(), "weekyear").unwrap();
+        assert_eq!(r.year(), 2024);
+    }
+    #[test]
+    fn trunc_decade_century() {
+        assert_eq!(
+            truncate_date_fields(jiff::civil::Date::new(2024, 6, 15).unwrap(), "decade")
+                .unwrap()
+                .year(),
+            2020
+        );
+        assert_eq!(
+            truncate_date_fields(jiff::civil::Date::new(2024, 6, 15).unwrap(), "century")
+                .unwrap()
+                .year(),
+            2000
+        );
+    }
+    #[test]
+    fn trunc_time_minute_second_milli_micro() {
+        let t = jiff::civil::Time::new(14, 30, 45, 123_456_789).unwrap();
+        assert_eq!(truncate_time_fields(t, "minute").unwrap().second(), 0);
+        assert_eq!(
+            truncate_time_fields(t, "second")
+                .unwrap()
+                .subsec_nanosecond(),
+            0
+        );
+        assert_eq!(
+            truncate_time_fields(t, "millisecond")
+                .unwrap()
+                .subsec_nanosecond(),
+            123_000_000
+        );
+        assert_eq!(
+            truncate_time_fields(t, "microsecond")
+                .unwrap()
+                .subsec_nanosecond(),
+            123_456_000
+        );
+    }
+    #[test]
+    fn trunc_time_unknown_errs() {
+        let t = jiff::civil::Time::new(0, 0, 0, 0).unwrap();
+        assert!(truncate_time_fields(t, "unknown").is_err());
+    }
+    #[test]
+    fn apply_overrides_dayofweek() {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("dayOfWeek".into(), Value::Int(1));
+        // 2024-06-15 is a Saturday → Monday is 2024-06-10
+        let r = apply_date_overrides(jiff::civil::Date::new(2024, 6, 15).unwrap(), &m).unwrap();
+        assert_eq!(r, jiff::civil::Date::new(2024, 6, 10).unwrap());
+    }
+    #[test]
+    fn apply_overrides_minute_second_ms_us_ns() {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("minute".into(), Value::Int(45));
+        m.insert("second".into(), Value::Int(30));
+        let r = apply_time_overrides(jiff::civil::Time::new(10, 0, 0, 0).unwrap(), &m).unwrap();
+        assert_eq!(r.minute(), 45);
+        assert_eq!(r.second(), 30);
+
+        let mut m2 = indexmap::IndexMap::new();
+        m2.insert("microsecond".into(), Value::Int(5));
+        let r2 = apply_time_overrides(jiff::civil::Time::new(0, 0, 0, 0).unwrap(), &m2).unwrap();
+        assert_eq!(r2.subsec_nanosecond(), 5_000);
+
+        let mut m3 = indexmap::IndexMap::new();
+        m3.insert("nanosecond".into(), Value::Int(7));
+        let r3 = apply_time_overrides(jiff::civil::Time::new(0, 0, 0, 0).unwrap(), &m3).unwrap();
+        assert_eq!(r3.subsec_nanosecond(), 7);
+    }
+    #[test]
+    fn extract_time_variants() {
+        assert!(extract_time(&lt_val(1, 0, 0)).is_some());
+        assert!(extract_time(&time_val(1, 0, 0, 0)).is_some());
+        assert!(extract_time(&ldt_val(2024, 1, 1, 1, 0, 0)).is_some());
+        assert!(extract_time(&dt_val(2024, 1, 1, 1, 0, 0)).is_some());
+        assert!(extract_time(&Value::Int(0)).is_none());
+    }
+    #[test]
+    fn extract_date_from_dt_ldt() {
+        assert!(extract_date(&ldt_val(2024, 6, 15, 0, 0, 0)).is_some());
+        assert!(extract_date(&dt_val(2024, 6, 15, 0, 0, 0)).is_some());
+    }
 }
