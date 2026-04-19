@@ -407,6 +407,8 @@ mod by_tests;
 #[cfg(test)]
 mod coverage_tests;
 #[cfg(test)]
+mod coverage_tests2;
+#[cfg(test)]
 mod filter_tests;
 #[cfg(test)]
 mod helpers_tests;
