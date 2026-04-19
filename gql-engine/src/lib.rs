@@ -145,4 +145,79 @@ mod tests {
             );
         }
     }
+
+    // ── Coverage uplift: execute_with_context, error variants ────────────
+
+    #[test]
+    fn execute_with_context_passes_parameters_through() {
+        let s = setup_store();
+        execute("INSERT (n:P {name:'Alice', age:30})", &s, "test").unwrap();
+        execute("INSERT (n:P {name:'Bob', age:20})", &s, "test").unwrap();
+
+        let registry = ProcedureRegistry::default();
+        let mut params = HashMap::new();
+        params.insert("min_age".to_string(), Value::Int(25));
+
+        let qr = execute_with_context(
+            "MATCH (n:P) FILTER n.age > $min_age RETURN n.name",
+            &s,
+            "test",
+            &registry,
+            params,
+        )
+        .unwrap();
+        assert_eq!(qr.rows.len(), 1);
+        assert_eq!(qr.rows[0].get("n.name"), Some(&Value::Str("Alice".into())));
+    }
+
+    #[test]
+    fn execute_with_context_empty_parameters_works() {
+        let s = setup_store();
+        execute("INSERT (n:P {name:'X'})", &s, "test").unwrap();
+        let registry = ProcedureRegistry::default();
+        let qr = execute_with_context(
+            "MATCH (n:P) RETURN n.name",
+            &s,
+            "test",
+            &registry,
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(qr.rows.len(), 1);
+    }
+
+    #[test]
+    fn execute_propagates_parse_error() {
+        let s = setup_store();
+        let err = execute("THIS IS NOT VALID GQL @@@", &s, "test").unwrap_err();
+        assert!(matches!(err, GqlError::Parse(_)), "got: {err:?}");
+        assert!(format!("{err}").contains("parse error"));
+    }
+
+    #[test]
+    fn execute_with_context_propagates_parse_error() {
+        let s = setup_store();
+        let registry = ProcedureRegistry::default();
+        let err = execute_with_context("???", &s, "test", &registry, HashMap::new()).unwrap_err();
+        assert!(matches!(err, GqlError::Parse(_)));
+    }
+
+    #[test]
+    fn execute_propagates_plan_or_execution_error_for_unknown_graph() {
+        let s = setup_store();
+        let err = execute("MATCH (n) RETURN n", &s, "missing").unwrap_err();
+        let msg = format!("{err}");
+        assert!(!msg.is_empty());
+    }
+
+    #[test]
+    fn gql_error_display_variants_distinct() {
+        let s = setup_store();
+        let parse_err = execute("???", &s, "test").unwrap_err();
+        assert!(format!("{parse_err}").starts_with("parse error"));
+
+        let mandatory_err = execute("MANDATORY MATCH (n:Nope) RETURN n", &s, "test").unwrap_err();
+        let m = format!("{mandatory_err}");
+        assert!(m.contains("execution error"), "got: {m}");
+    }
 }

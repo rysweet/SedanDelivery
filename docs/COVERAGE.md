@@ -25,7 +25,7 @@ function corners.
 | Crate                     |   Line% | Function% | Files tested | Target |
 | ------------------------- | ------: | --------: | -----------: | -----: |
 | `cypher-core`             | **75.39%** |    77.54% |          106 |    70% |
-| `gql-engine`              | **78.35%** |    85.71% |            5 |    70% |
+| `gql-engine`              | **99.36%** |   100.00% |            5 |    70% |
 | `gremlin-core`            | **71.92%** |    79.75% |           40 |    70% |
 | `sedan-cypher-embedded`   | **100.00%** |   100.00% |            1 |    70% |
 | `sedan-gql-embedded`      | **100.00%** |   100.00% |            1 |    70% |

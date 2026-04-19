@@ -63,3 +63,88 @@ fn run_and_enforce(
 
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse_gql;
+    use crate::planner::plan_gql_with_context;
+    use cypher_core::storage::InMemoryGraphStore;
+
+    fn setup() -> InMemoryGraphStore {
+        let s = InMemoryGraphStore::new();
+        s.create_graph("g").unwrap();
+        s
+    }
+
+    #[test]
+    fn execute_gql_with_context_runs_and_returns_rows() {
+        let s = setup();
+        execute_gql(
+            &plan_gql_with_context(
+                &parse_gql("INSERT (n:T {x:1})").unwrap(),
+                &s,
+                "g",
+                &ProcedureRegistry::default(),
+                &HashMap::new(),
+            )
+            .unwrap(),
+            &s,
+            "g",
+        )
+        .unwrap();
+
+        let plan = plan_gql_with_context(
+            &parse_gql("MATCH (n:T) RETURN n.x").unwrap(),
+            &s,
+            "g",
+            &ProcedureRegistry::default(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let qr = execute_gql_with_context(
+            &plan,
+            &s,
+            "g",
+            &ProcedureRegistry::default(),
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(qr.rows.len(), 1);
+    }
+
+    #[test]
+    fn execute_gql_mandatory_match_empty_errors() {
+        let s = setup();
+        let plan = plan_gql_with_context(
+            &parse_gql("MANDATORY MATCH (n:Ghost) RETURN n").unwrap(),
+            &s,
+            "g",
+            &ProcedureRegistry::default(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let err = execute_gql(&plan, &s, "g").unwrap_err();
+        assert!(matches!(err, GqlExecutionError::MandatoryMatchEmpty));
+        assert!(format!("{err}").contains("mandatory"));
+    }
+
+    #[test]
+    fn execute_gql_engine_error_propagates_via_from() {
+        // Trigger an engine error by querying a non-existent graph.
+        let s = setup();
+        let plan = plan_gql_with_context(
+            &parse_gql("MATCH (n) RETURN n").unwrap(),
+            &s,
+            "g",
+            &ProcedureRegistry::default(),
+            &HashMap::new(),
+        )
+        .unwrap();
+        let err = execute_gql(&plan, &s, "missing-graph").unwrap_err();
+        assert!(matches!(err, GqlExecutionError::Engine(_)));
+        // Display impl is forwarded from the inner engine error.
+        let msg = format!("{err}");
+        assert!(!msg.is_empty());
+    }
+}
