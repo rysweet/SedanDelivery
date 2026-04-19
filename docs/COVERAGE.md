@@ -4,6 +4,39 @@ Baseline line-coverage for the core/embedded Rust crates, measured with
 [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) using each
 crate's `--lib` unit tests.
 
+## Baseline (refreshed post Gremlin-bridge integration push past 80%)
+
+Refreshed against `main` after adding `cypher-core/tests/gremlin_integration.rs`,
+a dev-dep integration suite that compiles Gremlin traversals via
+`gremlin-core` and executes them through `cypher-core`'s `QueryExecutor` in
+Gremlin mode. The suite (~50 tests covering addV/addE, project/by, group,
+repeat/until/emit, choose/coalesce, sample, where(traversal), order().by(),
+select, unfold/fold, aggregate/sideEffect, and more) exercises the
+previously-unreachable Gremlin-only executor modules under
+`cypher-core/src/executor/engine/gremlin/*`. For `cypher-core` the floor
+script now measures `--lib --tests` (instead of `--lib` alone) to include
+integration coverage; other crates remain on `--lib`.
+
+cypher-core moved from **78.12% → 82.50%** (+4.38pt, `--lib --tests`).
+
+| Crate                     |   Line% | Function% | Files tested | Target |
+| ------------------------- | ------: | --------: | -----------: | -----: |
+| `cypher-core`             | **82.50%** |        ~  |          ~110 |    70% |
+| `gql-engine`              | **99.36%** |   100.00% |            5 |    70% |
+| `gremlin-core`            | **79.20%** |    88.36% |           40 |    70% |
+| `sedan-cypher-embedded`   | **100.00%** |   100.00% |            1 |    70% |
+| `sedan-gql-embedded`      | **100.00%** |   100.00% |            1 |    70% |
+| `sedan-gremlin-embedded`  | **99.47%** |    95.65% |            1 |    70% |
+
+Percentages come from `cargo llvm-cov --json`
+(`data[0].totals.{lines,functions}.percent`); files-tested is `len(data[0].files)`.
+For `cypher-core` the command is `cargo llvm-cov -p cypher-core --lib --tests --json`;
+for all other crates it remains `cargo llvm-cov -p <crate> --lib --json`.
+Crates already above the 70% line-coverage target: `cypher-core`,
+`gql-engine`, `sedan-gql-embedded`, `sedan-gremlin-embedded`,
+`sedan-cypher-embedded`. Crates still below target: `gremlin-core` (gap
+work tracked separately).
+
 ## Baseline (refreshed post cypher-core push to 78%)
 
 Refreshed against `main` after the cypher-core coverage push past 78%:

@@ -912,6 +912,7 @@ dependencies = [
  "criterion",
  "cucumber",
  "futures",
+ "gremlin-core",
  "indexmap",
  "insta",
  "jiff",

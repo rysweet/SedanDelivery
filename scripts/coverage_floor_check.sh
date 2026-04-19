@@ -10,7 +10,7 @@ set -uo pipefail
 
 # crate <space> floor%
 CRATES_AND_FLOORS=(
-  "cypher-core 77.0"
+  "cypher-core 81.5"
   "gql-engine 98.3"
   "gremlin-core 78.2"
   "sedan-cypher-embedded 99.0"
@@ -46,8 +46,17 @@ for entry in "${CRATES_AND_FLOORS[@]}"; do
   floor="${entry##* }"
   json="${OUT_DIR}/${crate}.json"
 
-  echo "--- running cargo llvm-cov -p ${crate} --lib ---" >&2
-  if ! cargo llvm-cov -p "$crate" --lib --json --output-path "$json" >&2; then
+  echo "--- running cargo llvm-cov -p ${crate} ---" >&2
+  # cypher-core uses --lib --tests because Gremlin-only executor modules
+  # are exercised by tests/gremlin_integration.rs (a dev-dep on gremlin-core
+  # to avoid the cypher-core ↔ gremlin-core circular runtime dep). All other
+  # crates measure --lib alone for apples-to-apples baseline continuity.
+  if [[ "$crate" == "cypher-core" ]]; then
+    cov_args=(--lib --tests)
+  else
+    cov_args=(--lib)
+  fi
+  if ! cargo llvm-cov -p "$crate" "${cov_args[@]}" --json --output-path "$json" >&2; then
     printf '%-28s %10s %10s %10s\n' "$crate" "ERROR" "$floor" "FAIL"
     failed=1
     continue
