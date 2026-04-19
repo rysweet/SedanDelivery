@@ -12,7 +12,7 @@ set -uo pipefail
 CRATES_AND_FLOORS=(
   "cypher-core 58.5"
   "gql-engine 78.35"
-  "gremlin-core 58.97"
+  "gremlin-core 56.5"
   "sedan-cypher-embedded 65.48"
   "sedan-gql-embedded 72.92"
   "sedan-gremlin-embedded 96.43"

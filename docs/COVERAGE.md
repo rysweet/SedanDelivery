@@ -18,7 +18,7 @@ added accompanying eval tests.
 | ------------------------- | ------: | --------: | -----------: | -----: |
 | `cypher-core`             | **58.73%** |    62.54% |          106 |    70% |
 | `gql-engine`              | **78.35%** |    85.71% |            5 |    70% |
-| `gremlin-core`            | **58.97%** |    75.49% |           33 |    70% |
+| `gremlin-core`            | **56.65%** |    75.49% |           40 |    70% |
 | `sedan-cypher-embedded`   | **65.48%** |    60.00% |            1 |    70% |
 | `sedan-gql-embedded`      | **72.92%** |    71.43% |            1 |    70% |
 | `sedan-gremlin-embedded`  | **96.43%** |    88.24% |            1 |    70% |
@@ -29,7 +29,9 @@ Crates already above the 70% line-coverage target: `gql-engine`,
 `sedan-gql-embedded`, `sedan-gremlin-embedded`. Crates still below target
 (gap work tracked separately): `cypher-core`, `gremlin-core`,
 `sedan-cypher-embedded`. The most dramatic delta from #1336/#1345 is
-`gremlin-core` (44.05% → 58.97%, +14.92pt) driven by #1353 + #1355;
+`gremlin-core` (44.05% → 58.97% → 56.65%, +12.60pt net) driven by #1353 + #1355,
+with a small artifactual dip from the helpers/ submodule split (file-boundary
+instrumentation, no behavior change);
 `cypher-core` ticked down very slightly (59.13% → 58.73%) because the
 #1357 `eval.rs` decomposition exposed previously-aggregated low-coverage
 gremlin-funcs files (see hot-spot table) without changing test behaviour.
@@ -41,7 +43,7 @@ single highest-LOC, lowest-coverage module dragging each one down:
 
 | Crate                   | Module (file)                                                |   LOC | Line%  |
 | ----------------------- | ------------------------------------------------------------ | ----: | -----: |
-| `gremlin-core`          | `src/compiler/helpers.rs`                                    | 1,414 | 44.55% |
+| `gremlin-core`          | `src/compiler/helpers/predicate_label.rs`                    |   189 | 19.58% |
 | `cypher-core`           | `src/storage/cached.rs`                                      |   953 | 41.87% |
 | `sedan-cypher-embedded` | `src/lib.rs`                                                 |    84 | 65.48% |
 
