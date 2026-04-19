@@ -13,8 +13,11 @@
 //!
 //! - [`loading`]: lazy load of a full graph into the cache + invalidation.
 //! - [`invalidation`]: in-cache mutation helpers used by write-through paths.
+//! - [`reads`]: read-path inherent helpers used by the trait impl.
+//! - [`writes`]: write-path inherent helpers used by the trait impl.
+//! - [`schema_admin`]: schema and graph-administration inherent helpers.
 //! - [`store_impl`]: the `GraphStore` trait implementation (single block,
-//!   as required by Rust).
+//!   as required by Rust); each method delegates to a sibling helper.
 
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -24,7 +27,10 @@ use crate::storage::{GraphStore, InMemoryGraphStore};
 
 mod invalidation;
 mod loading;
+mod reads;
+mod schema_admin;
 mod store_impl;
+mod writes;
 
 #[cfg(test)]
 mod tests;
