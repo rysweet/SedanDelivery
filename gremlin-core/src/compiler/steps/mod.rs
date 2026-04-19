@@ -1,12 +1,28 @@
 //! Per-step compilation submodules for `compile_from`.
 //!
-//! Currently hosts a single `dispatch` module that contains the giant
-//! `match step { ... }` extracted from `compile_from.rs`. The split is
-//! mechanical — no behavior changes — so further per-arm-group splits
-//! (filter/traversal/projection/etc.) can be done incrementally without
-//! disturbing the outer compilation loop.
+//! `dispatch.rs` is a thin top-level `match` that routes each
+//! `GremlinStep` variant to one of the per-category submodules below.
+//! Each submodule exposes a single `pub(super) fn compile_<category>_step`
+//! method on `GremlinCompiler` that contains the verbatim arm bodies
+//! formerly inlined in the giant `match`. The split is mechanical —
+//! no behavior changes.
 
+mod aggregation;
+mod branch;
+mod by;
 mod dispatch;
+mod filter;
+mod limit;
+mod misc;
+mod mutation;
+mod order;
+mod path;
+mod projection;
+mod set_ops;
+mod side_effect;
+mod source;
+mod strings;
+mod traversal;
 
 /// Control-flow signal returned by [`super::GremlinCompiler::dispatch_step`].
 ///
