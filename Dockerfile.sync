@@ -39,6 +39,7 @@ COPY sedan-cypher-embedded/Cargo.toml ./sedan-cypher-embedded/
 COPY sedan-gremlin-embedded/Cargo.toml ./sedan-gremlin-embedded/
 COPY tests/loadtest/Cargo.toml        ./tests/loadtest/
 COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
+COPY examples/embedded_app/Cargo.toml ./examples/embedded_app/
 
 # Stub sources so cargo can resolve the full workspace dependency graph.
 # Generate stub source files so cargo can resolve the full workspace dependency

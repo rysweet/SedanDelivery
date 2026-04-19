@@ -134,6 +134,17 @@ for df in Dockerfile Dockerfile.bolt Dockerfile.sync Dockerfile.api; do
         continue
     fi
 
+    # Two valid stub strategies are supported:
+    #   1. The Dockerfile invokes scripts/generate-cargo-stubs.sh before the
+    #      first cargo build layer (preferred — auto-handles new members).
+    #   2. The Dockerfile manually COPYs a stub `<member>/src/main.rs` for
+    #      each [[bin]] member before the first cargo build layer (legacy).
+    stub_script_line=$(grep -n 'scripts/generate-cargo-stubs\.sh' "$FILE" | grep -E 'RUN|^[0-9]+:[[:space:]]*scripts/generate' | head -1 | cut -d: -f1 || true)
+    if [ -n "$stub_script_line" ] && [ "$stub_script_line" -lt "$first_build_line" ]; then
+        pass "$df: uses scripts/generate-cargo-stubs.sh (auto-stubs all ${#BIN_MEMBERS[@]} [[bin]] members) before the first cargo build layer"
+        continue
+    fi
+
     for bin_member in "${BIN_MEMBERS[@]}"; do
         stub_line=$(grep -n "${bin_member}/src/main.rs" "$FILE" | head -1 | cut -d: -f1 || true)
         if [ -z "$stub_line" ]; then
