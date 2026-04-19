@@ -20,3 +20,7 @@ gremlin-tck = { path = "../tests/gremlin-tck" }
 [[bench]]
 name = "engine"
 harness = false
+
+[[bench]]
+name    = "embedded_bench"
+harness = false

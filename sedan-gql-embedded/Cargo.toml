@@ -19,3 +19,7 @@ sedan-cypher-embedded = { path = "../sedan-cypher-embedded" }
 [[bench]]
 name    = "engine"
 harness = false
+
+[[bench]]
+name    = "embedded_bench"
+harness = false

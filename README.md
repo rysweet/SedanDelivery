@@ -307,6 +307,7 @@ Plaintext exposes both to network observers. See
 - [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) — 4 security apps validated against SedanDelivery's Bolt protocol
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
 - [Embedded Library Usage Guide](docs/EMBEDDED_GUIDE.md) — comprehensive guide for the in-process crates (`sedan-cypher-embedded`, `sedan-gql-embedded`, `sedan-gremlin-embedded`), with runnable examples under each crate's `examples/` directory
+- [Performance Benchmarking](docs/PERFORMANCE.md) — criterion bench suite for the embedded engine crates with run/interpret/baseline guidance
 - [Product Surface Reference](docs/reference/product-surfaces.md) — current runtime/distribution surfaces and the live comparison baselines for embedded engines
 - [Embedded Engines Reference](docs/reference/embedded-engines.md) — current public API and wiring for the in-process crates
 - [Embed SedanDelivery In-Process](docs/tutorials/embed-sedandelivery.md) — current embedded quick start for Cypher, GQL, and Gremlin

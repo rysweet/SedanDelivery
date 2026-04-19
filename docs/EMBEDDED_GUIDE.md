@@ -263,6 +263,8 @@ cargo test -p sedan-gremlin-embedded                          # Gremlin TCK via 
   decision guide and `Cargo.toml` cheat sheet
 - [Architecture Overview](architecture.md) — how the embedded crates fit
   into the wider workspace (parser, planner, executor, storage)
+- [Performance Benchmarking](PERFORMANCE.md) — criterion bench suite for
+  each embedded crate and how to track regressions over time
 - Per-crate README files: [cypher](../sedan-cypher-embedded/README.md),
   [gql](../sedan-gql-embedded/README.md),
   [gremlin](../sedan-gremlin-embedded/README.md)

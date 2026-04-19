@@ -21,6 +21,10 @@ tokio     = { workspace = true }
 name    = "engine"
 harness = false
 
+[[bench]]
+name    = "embedded_bench"
+harness = false
+
 [[test]]
 name    = "tck_via_embedded"
 path    = "tests/tck/runner.rs"
