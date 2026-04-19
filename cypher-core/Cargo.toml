@@ -38,7 +38,19 @@ name    = "parser"
 harness = false
 
 [[bench]]
-name    = "executor"
+name    = "executor_scan"
+harness = false
+
+[[bench]]
+name    = "executor_aggregate"
+harness = false
+
+[[bench]]
+name    = "executor_expand"
+harness = false
+
+[[bench]]
+name    = "executor_mutation"
 harness = false
 
 [[bench]]
