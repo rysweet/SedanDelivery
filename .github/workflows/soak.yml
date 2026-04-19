@@ -1,0 +1,75 @@
+name: soak
+
+# Soak / memory-leak detection harness for the SedanDelivery embedded
+# engines (`sedan-cypher-embedded`, `sedan-gql-embedded`,
+# `sedan-gremlin-embedded`). See docs/SOAK_TESTING.md for the rationale
+# and per-scenario leak budgets.
+#
+# This workflow is intentionally OPT-IN and OBSERVABILITY-ONLY:
+#   * It is NOT a required check.
+#   * Failures here surface latent issues but do not block PRs.
+#   * Promote it to a required check only after it has been green for
+#     two consecutive weeks.
+#
+# Triggers:
+#   * workflow_dispatch — run on demand
+#   * schedule (06:00 UTC nightly) — catch slow regressions early
+#   * push to main with `[soak]` in the head commit message — for
+#     intentional, in-line validation of changes that touch the
+#     embedded engines or the executor.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    # Skip pushes that don't opt in via `[soak]` in the commit message.
+    # workflow_dispatch + schedule always run.
+    if: >
+      github.event_name != 'push' ||
+      contains(github.event.head_commit.message, '[soak]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Observability-only — never block downstream checks on this.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      # Swatinem/rust-cache pinned by SHA (v2.7.5).
+      - name: Cache cargo registry + target/
+        uses: Swatinem/rust-cache@82a92a6e8fbeee089604da2575dc567ae9ddeaab
+        with:
+          shared-key: soak
+          cache-on-failure: true
+
+      - name: Run soak harness
+        run: bash scripts/run_soak_tests.sh
+        env:
+          # Full spec iteration counts. Lower (e.g. 0.1) for faster runs;
+          # raise (e.g. 10) for extended overnight soaks.
+          SOAK_ITER_SCALE: '1.0'
+          # Match the workflow timeout, with a 5-minute cushion for setup.
+          SOAK_OVERALL_TIMEOUT: '2400'
+
+      - name: Upload soak log
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: soak-log-${{ github.run_id }}
+          path: soak-output.log
+          if-no-files-found: warn
+          retention-days: 14

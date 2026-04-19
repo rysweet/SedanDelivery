@@ -1,0 +1,36 @@
+[package]
+name        = "soak"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish     = false
+description = "Soak / memory-leak detection harness for the SedanDelivery embedded engines"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sedan-cypher-embedded  = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded     = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+indexmap               = { workspace = true }
+
+[[test]]
+name = "scenario1_query_soak"
+path = "tests/scenario1_query_soak.rs"
+
+[[test]]
+name = "scenario2_churn"
+path = "tests/scenario2_churn.rs"
+
+[[test]]
+name = "scenario3_long_session"
+path = "tests/scenario3_long_session.rs"
+
+[[test]]
+name = "scenario4_concurrent"
+path = "tests/scenario4_concurrent.rs"
+
+[[test]]
+name = "scenario5_budget"
+path = "tests/scenario5_budget.rs"

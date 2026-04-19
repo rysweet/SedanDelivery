@@ -17,6 +17,7 @@ members = [
     "tests/loadtest",
     "tests/gremlin-tck",
     "tests/bolt-driver-conformance",
+    "tests/soak",
     "tests/differential",
     "gql-engine",
     "examples/embedded_app",
