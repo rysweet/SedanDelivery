@@ -38,6 +38,8 @@ infra/*.json
 
 # Code coverage reports
 coverage/
+target/llvm-cov/
+target/llvm-cov-reports/
 
 # Local agent/test runtime artifacts
 logs/
