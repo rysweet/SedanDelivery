@@ -27,8 +27,32 @@ const METRICS_SRC: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/src/redis_memory_metrics.rs"
 ));
-const CONNECTION_SRC: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/connection.rs"));
+const CONNECTION_SRC: &str = concat!(
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/connection/mod.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/connection/config.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/connection/manager.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/connection/conn.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/connection/pool.rs"
+    )),
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/connection/replica.rs"
+    )),
+);
 // `writes/nodes.rs` was decomposed into a `writes/nodes/` directory; the
 // substring-based audits below operate on the concatenation of every node
 // write submodule.
