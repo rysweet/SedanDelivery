@@ -6,6 +6,7 @@ scripts
 tests
 !tests/loadtest/Cargo.toml
 !tests/gremlin-tck/Cargo.toml
+!tests/bolt-driver-conformance/Cargo.toml
 neo4j-compat-gallery
 *.md
 coverage
