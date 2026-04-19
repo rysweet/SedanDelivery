@@ -1,6 +1,19 @@
+//! Cursor-based lexer state and the main `next_token` dispatch loop.
+//!
+//! Token-category-specific scanning logic lives in submodules:
+//! - [`strings`]: string literals and backtick-quoted identifiers
+//! - [`numbers`]: integer, float, hex, and octal literals
+//! - [`identifiers`]: identifiers and keywords
+//! - [`operators`]: single- and multi-character operators and punctuation
+
+mod identifiers;
+mod numbers;
+mod operators;
+mod strings;
+
 use crate::error::ParseError;
 
-use super::tokens::{keyword, Token, TokenKind};
+use super::tokens::{Token, TokenKind};
 
 // ── Lexer ─────────────────────────────────────────────────────────────────────
 
@@ -73,271 +86,6 @@ impl<'src> Lexer<'src> {
         }
     }
 
-    /// Lex a string literal (opening quote already consumed).
-    /// `quote` is either `b'\''` or `b'"'`.
-    /// Returns the unescaped string content, or a `ParseError`.
-    fn lex_string(&mut self, quote: u8, start: usize) -> Result<String, ParseError> {
-        let mut buf = String::new();
-        loop {
-            match self.peek_byte(0) {
-                None => {
-                    return Err(ParseError::UnterminatedString { offset: start });
-                }
-                Some(b) if b == quote => {
-                    self.pos += 1;
-                    return Ok(buf);
-                }
-                Some(b'\\') => {
-                    self.pos += 1; // consume backslash
-                    let escape_offset = self.pos;
-                    match self.peek_byte(0) {
-                        None => {
-                            return Err(ParseError::UnterminatedString { offset: start });
-                        }
-                        Some(b'n') => {
-                            self.pos += 1;
-                            buf.push('\n');
-                        }
-                        Some(b't') => {
-                            self.pos += 1;
-                            buf.push('\t');
-                        }
-                        Some(b'r') => {
-                            self.pos += 1;
-                            buf.push('\r');
-                        }
-                        Some(b'\\') => {
-                            self.pos += 1;
-                            buf.push('\\');
-                        }
-                        Some(b'\'') => {
-                            self.pos += 1;
-                            buf.push('\'');
-                        }
-                        Some(b'"') => {
-                            self.pos += 1;
-                            buf.push('"');
-                        }
-                        Some(b'b') => {
-                            self.pos += 1;
-                            buf.push('\x08');
-                        }
-                        Some(b'f') => {
-                            self.pos += 1;
-                            buf.push('\x0C');
-                        }
-                        Some(b'u') => {
-                            // \uXXXX Unicode escape
-                            self.pos += 1;
-                            let hex_start = self.pos;
-                            let mut code: u32 = 0;
-                            let mut digits = 0;
-                            while digits < 4 {
-                                match self.peek_byte(0) {
-                                    Some(b) if (b as char).is_ascii_hexdigit() => {
-                                        // safe: is_ascii_hexdigit guard ensures to_digit(16) succeeds
-                                        code = code * 16 + (b as char).to_digit(16).unwrap();
-                                        self.pos += 1;
-                                        digits += 1;
-                                    }
-                                    _ => break,
-                                }
-                            }
-                            if digits < 4 {
-                                return Err(ParseError::InvalidEscape {
-                                    char: 'u',
-                                    offset: hex_start - 1,
-                                });
-                            }
-                            match char::from_u32(code) {
-                                Some(c) => buf.push(c),
-                                None => {
-                                    return Err(ParseError::InvalidEscape {
-                                        char: 'u',
-                                        offset: hex_start - 1,
-                                    });
-                                }
-                            }
-                        }
-                        Some(b) => {
-                            let c = b as char;
-                            self.pos += 1;
-                            return Err(ParseError::InvalidEscape {
-                                char: c,
-                                offset: escape_offset - 1,
-                            });
-                        }
-                    }
-                }
-                Some(_) => {
-                    // Regular character — may be multi-byte UTF-8.
-                    // safe: peek_byte returned Some, so rest() is non-empty
-                    let c = self.rest().chars().next().unwrap();
-                    self.pos += c.len_utf8();
-                    buf.push(c);
-                }
-            }
-        }
-    }
-
-    /// Lex a backtick-quoted identifier (opening backtick already consumed).
-    fn lex_backtick_identifier(&mut self, start: usize) -> Result<&'src str, ParseError> {
-        let content_start = self.pos;
-        loop {
-            match self.peek_byte(0) {
-                None => {
-                    return Err(ParseError::UnterminatedString { offset: start });
-                }
-                Some(b'`') => {
-                    let end = self.pos;
-                    self.pos += 1;
-                    return Ok(&self.src[content_start..end]);
-                }
-                Some(b) => {
-                    self.pos += if b.is_ascii() {
-                        1
-                    } else {
-                        self.rest()
-                            .chars()
-                            .next()
-                            .map(|c| c.len_utf8())
-                            .unwrap_or(1)
-                    };
-                }
-            }
-        }
-    }
-
-    /// Lex a numeric literal (integer or float). The first digit is already past `start`.
-    /// On entry `self.pos` is just after the first character (which is a digit).
-    /// We receive `start` and `first_char` so we can form the full slice.
-    fn lex_number(&mut self, start: usize) -> Result<TokenKind, ParseError> {
-        // Consume the rest of the integer part.
-        while matches!(self.peek_byte(0), Some(b'0'..=b'9') | Some(b'_')) {
-            self.pos += 1;
-        }
-
-        // Attempt hex literal detection: starts at position `start`, first char was '0'
-        let is_hex = self.src.as_bytes().get(start) == Some(&b'0')
-            && matches!(self.peek_byte(0), Some(b'x') | Some(b'X'));
-
-        if is_hex {
-            self.pos += 1; // consume 'x'/'X'
-            let hex_start = self.pos;
-            while matches!(
-                self.peek_byte(0),
-                Some(b'0'..=b'9') | Some(b'a'..=b'f') | Some(b'A'..=b'F') | Some(b'_')
-            ) {
-                self.pos += 1;
-            }
-            let hex_digits: String = self.src[hex_start..self.pos]
-                .chars()
-                .filter(|c| *c != '_')
-                .collect();
-            // If the hex value is exactly 2^63, emit IntMinMagnitude (valid only after unary -)
-            return i64::from_str_radix(&hex_digits, 16)
-                .map(TokenKind::IntLiteral)
-                .or_else(|_| {
-                    u64::from_str_radix(&hex_digits, 16)
-                        .ok()
-                        .filter(|&v| v == (i64::MAX as u64) + 1)
-                        .map(|_| TokenKind::IntMinMagnitude)
-                        .ok_or(())
-                })
-                .map_err(|_| ParseError::IntegerOverflow {
-                    literal: self.src[start..self.pos].to_string(),
-                    offset: start,
-                });
-        }
-
-        // Octal literal detection: `0o...` or `0O...`
-        let is_octal = self.src.as_bytes().get(start) == Some(&b'0')
-            && matches!(self.peek_byte(0), Some(b'o') | Some(b'O'));
-
-        if is_octal {
-            self.pos += 1; // consume 'o'/'O'
-            let oct_start = self.pos;
-            while matches!(self.peek_byte(0), Some(b'0'..=b'7') | Some(b'_')) {
-                self.pos += 1;
-            }
-            let oct_digits: String = self.src[oct_start..self.pos]
-                .chars()
-                .filter(|c| *c != '_')
-                .collect();
-            // If the octal value is exactly 2^63, emit IntMinMagnitude (valid only after unary -)
-            return i64::from_str_radix(&oct_digits, 8)
-                .map(TokenKind::IntLiteral)
-                .or_else(|_| {
-                    u64::from_str_radix(&oct_digits, 8)
-                        .ok()
-                        .filter(|&v| v == (i64::MAX as u64) + 1)
-                        .map(|_| TokenKind::IntMinMagnitude)
-                        .ok_or(())
-                })
-                .map_err(|_| ParseError::IntegerOverflow {
-                    literal: self.src[start..self.pos].to_string(),
-                    offset: start,
-                });
-        }
-
-        let is_float = matches!(self.peek_byte(0), Some(b'.'))
-            && !matches!(self.peek_byte(1), Some(b'.')) // avoid `..` being eaten
-            || matches!(self.peek_byte(0), Some(b'e') | Some(b'E'));
-
-        if is_float {
-            // Consume fractional part.
-            if self.peek_byte(0) == Some(b'.') {
-                self.pos += 1;
-                while matches!(self.peek_byte(0), Some(b'0'..=b'9') | Some(b'_')) {
-                    self.pos += 1;
-                }
-            }
-            // Consume exponent.
-            if matches!(self.peek_byte(0), Some(b'e') | Some(b'E')) {
-                self.pos += 1;
-                if matches!(self.peek_byte(0), Some(b'+') | Some(b'-')) {
-                    self.pos += 1;
-                }
-                while matches!(self.peek_byte(0), Some(b'0'..=b'9') | Some(b'_')) {
-                    self.pos += 1;
-                }
-            }
-            let text: String = self.src[start..self.pos]
-                .chars()
-                .filter(|c| *c != '_')
-                .collect();
-            return text
-                .parse::<f64>()
-                .map(TokenKind::FloatLiteral)
-                .map_err(|_| ParseError::IntegerOverflow {
-                    literal: text,
-                    offset: start,
-                });
-        }
-
-        // Plain integer.
-        let text: String = self.src[start..self.pos]
-            .chars()
-            .filter(|c| *c != '_')
-            .collect();
-        // Try parsing as i64 first. If it overflows but the value is exactly 2^63
-        // (9223372036854775808 = i64::MAX + 1), emit IntMinMagnitude — this token is
-        // only valid after unary minus: -9223372036854775808 = i64::MIN.
-        text.parse::<i64>()
-            .map(TokenKind::IntLiteral)
-            .or_else(|_| {
-                text.parse::<u64>()
-                    .ok()
-                    .filter(|&v| v == (i64::MAX as u64) + 1)
-                    .map(|_| TokenKind::IntMinMagnitude)
-                    .ok_or(())
-            })
-            .map_err(|_| ParseError::IntegerOverflow {
-                literal: self.src[start..self.pos].to_string(),
-                offset: start,
-            })
-    }
-
     /// Produce the next token, skipping whitespace and comments.
     /// Returns `Ok(None)` at end of input, `Ok(Some(token))` otherwise,
     /// and `Err` on lexical errors (unterminated strings, bad escapes, etc.).
@@ -398,15 +146,8 @@ impl<'src> Lexer<'src> {
 
         // ── Identifiers and keywords ──────────────────────────────────────────
         if b0.is_ascii_alphabetic() || b0 == b'_' {
-            while matches!(
-                self.peek_byte(0),
-                Some(b'a'..=b'z') | Some(b'A'..=b'Z') | Some(b'0'..=b'9') | Some(b'_')
-            ) {
-                self.pos += 1;
-            }
+            let kind = self.lex_identifier_or_keyword(start);
             let text = &self.src[start..self.pos];
-            let lower = text.to_ascii_lowercase();
-            let kind = keyword(&lower).unwrap_or(TokenKind::Identifier);
             return Ok(Some(Token::new(kind, text, start)));
         }
 
@@ -422,100 +163,19 @@ impl<'src> Lexer<'src> {
 
         // ── Float literal starting with '.' (e.g. .1, .5e3) ─────────────────
         if b0 == b'.' && matches!(b1, Some(b'0'..=b'9')) {
-            self.pos += 1; // consume the '.'
-                           // Read remaining digits
-            while matches!(self.peek_byte(0), Some(b'0'..=b'9')) {
-                self.pos += 1;
-            }
-            // Check for exponent
-            if matches!(self.peek_byte(0), Some(b'e') | Some(b'E')) {
-                self.pos += 1;
-                if matches!(self.peek_byte(0), Some(b'+') | Some(b'-')) {
-                    self.pos += 1;
-                }
-                while matches!(self.peek_byte(0), Some(b'0'..=b'9')) {
-                    self.pos += 1;
-                }
-            }
+            let kind = self.lex_dot_float(start)?;
             let text = &self.src[start..self.pos];
-            let val: f64 = text.parse().map_err(|_| ParseError::Syntax {
-                offset: start,
-                expected: "valid float literal".into(),
-                found: text.into(),
-            })?;
-            return Ok(Some(Token::new(TokenKind::FloatLiteral(val), text, start)));
+            return Ok(Some(Token::new(kind, text, start)));
         }
 
         // ── Two-character operators ────────────────────────────────────────────
-        let tok = match (b0, b1) {
-            (b'<', Some(b'>')) => {
-                self.pos += 2;
-                Some(TokenKind::Neq)
-            }
-            (b'<', Some(b'=')) => {
-                self.pos += 2;
-                Some(TokenKind::Lte)
-            }
-            (b'>', Some(b'=')) => {
-                self.pos += 2;
-                Some(TokenKind::Gte)
-            }
-            (b'-', Some(b'>')) => {
-                self.pos += 2;
-                Some(TokenKind::Arrow)
-            }
-            (b'<', Some(b'-')) => {
-                self.pos += 2;
-                Some(TokenKind::LeftArrow)
-            }
-            (b'.', Some(b'.')) => {
-                self.pos += 2;
-                Some(TokenKind::DoubleDot)
-            }
-            (b'=', Some(b'~')) => {
-                self.pos += 2;
-                Some(TokenKind::RegexEq)
-            }
-            _ => None,
-        };
-        if let Some(kind) = tok {
+        if let Some(kind) = self.try_two_char_operator(b0, b1) {
             let text = &self.src[start..self.pos];
             return Ok(Some(Token::new(kind, text, start)));
         }
 
         // ── Single-character operators and punctuation ────────────────────────
-        self.pos += 1;
-        let kind = match b0 {
-            b'(' => TokenKind::LParen,
-            b')' => TokenKind::RParen,
-            b'[' => TokenKind::LBracket,
-            b']' => TokenKind::RBracket,
-            b'{' => TokenKind::LBrace,
-            b'}' => TokenKind::RBrace,
-            b',' => TokenKind::Comma,
-            b'.' => TokenKind::Dot,
-            b':' => TokenKind::Colon,
-            b';' => TokenKind::Semicolon,
-            b'=' => TokenKind::Eq,
-            b'<' => TokenKind::Lt,
-            b'>' => TokenKind::Gt,
-            b'+' => TokenKind::Plus,
-            b'-' => TokenKind::Dash,
-            b'*' => TokenKind::Star,
-            b'/' => TokenKind::Slash,
-            b'%' => TokenKind::Percent,
-            b'^' => TokenKind::Caret,
-            b'&' => TokenKind::Amp,
-            b'|' => TokenKind::Pipe,
-            b'~' => TokenKind::Tilde,
-            _ => {
-                // Non-ASCII or truly unknown.
-                let c = self.src[start..].chars().next().unwrap_or('?');
-                // If it was a multi-byte char we consumed too little above; fix pos.
-                self.pos = start + c.len_utf8();
-                TokenKind::Unknown(c)
-            }
-        };
+        let kind = self.lex_single_char_operator(start, b0);
         // text slice must be computed AFTER pos is fixed (handles multi-byte chars)
         let text = &self.src[start..self.pos];
         Ok(Some(Token::new(kind, text, start)))
