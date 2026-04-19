@@ -28,7 +28,7 @@ function corners.
 | `gql-engine`              | **78.35%** |    85.71% |            5 |    70% |
 | `gremlin-core`            | **71.92%** |    79.75% |           40 |    70% |
 | `sedan-cypher-embedded`   | **65.48%** |    60.00% |            1 |    70% |
-| `sedan-gql-embedded`      | **72.92%** |    71.43% |            1 |    70% |
+| `sedan-gql-embedded`      | **100.00%** |   100.00% |            1 |    70% |
 | `sedan-gremlin-embedded`  | **96.43%** |    88.24% |            1 |    70% |
 
 Percentages come from `cargo llvm-cov --lib --json`
