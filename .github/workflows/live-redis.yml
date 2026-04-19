@@ -1,0 +1,107 @@
+name: Live Redis/Valkey Tests
+
+# Runs every `#[ignore]`-gated integration test in `sd2-redis-store` against a
+# real Valkey deployment (standalone + 3-node cluster). These tests exercise
+# code paths — pipelining, MOVED redirects, key-prefix routing — that the
+# default `cargo test` workspace run cannot cover because `sd2-redis-store` is
+# excluded from the workspace test set.
+#
+# This workflow is intentionally NOT a required check: it is opt-in /
+# observability so cluster regressions surface in CI without blocking PRs.
+# Promote to required only after it has demonstrated stability.
+#
+# Complementary to .github/workflows/redis-integration.yml, which exercises a
+# narrower subset of `--ignored` tests alongside Bolt gallery checks. This
+# workflow runs the *full* `--ignored` set against both standalone and cluster
+# topologies.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "sd2-redis-store/**"
+      - "cypher-core/**"
+      - "scripts/run_live_redis_tests.sh"
+      - ".github/workflows/live-redis.yml"
+  push:
+    branches: [main]
+    paths:
+      - "sd2-redis-store/**"
+      - "cypher-core/**"
+      - "scripts/run_live_redis_tests.sh"
+      - ".github/workflows/live-redis.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  standalone:
+    name: Standalone Valkey (--ignored)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      valkey:
+        image: valkey/valkey:8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          shared-key: live-redis-standalone
+          workspaces: ". -> target"
+
+      - name: Install libclang (required by sd2-redis-module deps)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev redis-tools
+
+      - name: Run --ignored tests against standalone Valkey
+        env:
+          GQL_REDIS_URL: redis://127.0.0.1:6379
+        run: |
+          cargo test -p sd2-redis-store --test cluster_write_path --test metadata_audit \
+            -- --ignored --nocapture
+
+  cluster:
+    name: 3-Node Valkey Cluster (--ignored)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2.8.0
+        with:
+          shared-key: live-redis-cluster
+          workspaces: ". -> target"
+
+      - name: Install libclang + redis-tools
+        run: sudo apt-get update -q && sudo apt-get install -y -q libclang-dev redis-tools
+
+      - name: Boot 3-node Valkey cluster (host network) and run --ignored tests
+        run: |
+          # The script handles container lifecycle, cluster formation, env-var
+          # wiring, and runs every --ignored test in sd2-redis-store. Using
+          # the script (rather than a `services:` block) lets us drive
+          # `redis-cli --cluster create`, which the services syntax can't
+          # express.
+          SKIP_STANDALONE=1 bash scripts/run_live_redis_tests.sh
