@@ -1,0 +1,240 @@
+//! Aggregate-function detection and rewriting utilities.
+
+use crate::ast::{Expr, Identifier};
+use crate::error::{ExecutionError, GqlError};
+use crate::planner::AggFunction;
+
+/// Returns `true` if the expression is or contains an aggregate function call.
+pub(crate) fn has_agg_function(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            // The function itself is an aggregate, OR one of its args contains an aggregate
+            // (e.g. size(collect(a)), all(x IN collect(...) WHERE x))
+            is_agg_name(name.as_str()) || args.iter().any(has_agg_function)
+        }
+        Expr::BinaryOp { left, right, .. } => has_agg_function(left) || has_agg_function(right),
+        Expr::UnaryOp { expr, .. } => has_agg_function(expr),
+        Expr::Property(obj, _) => has_agg_function(obj),
+        Expr::List(items) => items.iter().any(has_agg_function),
+        Expr::MapLiteral(pairs) => pairs.iter().any(|(_, v)| has_agg_function(v)),
+        Expr::ListComp {
+            list, filter, map, ..
+        } => {
+            has_agg_function(list)
+                || filter.as_deref().map(has_agg_function).unwrap_or(false)
+                || has_agg_function(map)
+        }
+        Expr::Case {
+            subject,
+            alternatives,
+            default,
+        } => {
+            subject.as_deref().map(has_agg_function).unwrap_or(false)
+                || alternatives
+                    .iter()
+                    .any(|(c, r)| has_agg_function(c) || has_agg_function(r))
+                || default.as_deref().map(has_agg_function).unwrap_or(false)
+        }
+        Expr::IsNull(e) | Expr::IsNotNull(e) => has_agg_function(e),
+        Expr::Subscript(a, b) => has_agg_function(a) || has_agg_function(b),
+        Expr::Slice(a, b, c) => {
+            has_agg_function(a)
+                || b.as_deref().map(has_agg_function).unwrap_or(false)
+                || c.as_deref().map(has_agg_function).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn is_agg_name(name: &str) -> bool {
+    crate::planner::is_aggregate_function(name)
+}
+
+/// Extract the aggregate function, first argument, optional second argument, and distinct flag
+/// from a top-level `FunctionCall` expression.
+pub(crate) fn extract_agg_function(
+    expr: &Expr,
+) -> Result<(AggFunction, Expr, Option<Expr>, bool), GqlError> {
+    match expr {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            let func = match name.to_uppercase().as_str() {
+                "COUNT" => AggFunction::Count,
+                "SUM" => AggFunction::Sum,
+                "AVG" => AggFunction::Avg,
+                "MIN" => AggFunction::Min,
+                "MAX" => AggFunction::Max,
+                "COLLECT" => AggFunction::Collect,
+                "STDEV" => AggFunction::StDev,
+                "STDEVP" => AggFunction::StDevP,
+                "PERCENTILECONT" => AggFunction::PercentileCont,
+                "PERCENTILEDISC" => AggFunction::PercentileDisc,
+                other => {
+                    return Err(GqlError::Execution(ExecutionError::unsupported(format!(
+                        "aggregate function '{other}'"
+                    ))));
+                }
+            };
+            let arg = args.first().cloned().unwrap_or(Expr::Null);
+            let second_arg = args.get(1).cloned();
+            Ok((func, arg, second_arg, *distinct))
+        }
+        _ => Err(GqlError::Execution(ExecutionError::unsupported(
+            "non-function aggregate expression",
+        ))),
+    }
+}
+
+/// Find the innermost aggregate function call in a compound expression.
+/// Returns (AggFunction, arg_expr, second_arg_expr, distinct) if found.
+pub(crate) fn find_inner_aggregate(expr: &Expr) -> Option<(AggFunction, Expr, Option<Expr>, bool)> {
+    match expr {
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            let func_opt = match name.to_uppercase().as_str() {
+                "COUNT" => Some(AggFunction::Count),
+                "SUM" => Some(AggFunction::Sum),
+                "AVG" => Some(AggFunction::Avg),
+                "MIN" => Some(AggFunction::Min),
+                "MAX" => Some(AggFunction::Max),
+                "COLLECT" => Some(AggFunction::Collect),
+                "STDEV" => Some(AggFunction::StDev),
+                "STDEVP" => Some(AggFunction::StDevP),
+                "PERCENTILECONT" => Some(AggFunction::PercentileCont),
+                "PERCENTILEDISC" => Some(AggFunction::PercentileDisc),
+                _ => None,
+            };
+            if let Some(func) = func_opt {
+                let arg = args.first().cloned().unwrap_or(Expr::Null);
+                let second_arg = args.get(1).cloned();
+                Some((func, arg, second_arg, *distinct))
+            } else {
+                args.iter().find_map(find_inner_aggregate)
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            find_inner_aggregate(left).or_else(|| find_inner_aggregate(right))
+        }
+        Expr::UnaryOp { expr: inner, .. } => find_inner_aggregate(inner),
+        Expr::Property(inner, _) => find_inner_aggregate(inner),
+        Expr::MapLiteral(pairs) => pairs.iter().find_map(|(_, v)| find_inner_aggregate(v)),
+        Expr::ListComp { list, map, .. } => {
+            find_inner_aggregate(list).or_else(|| find_inner_aggregate(map))
+        }
+        _ => None,
+    }
+}
+
+/// Rewrite an expression by replacing the first aggregate function call with
+/// a variable reference to `alias`.
+pub(crate) fn rewrite_agg_to_var(expr: &Expr, alias: &Identifier) -> Expr {
+    match expr {
+        Expr::FunctionCall { name, .. } if is_agg_name(name) => {
+            // This IS the aggregate: replace the whole call with a variable.
+            Expr::Variable(alias.clone())
+        }
+        Expr::FunctionCall {
+            name,
+            args,
+            distinct,
+        } => {
+            // Non-aggregate function: rewrite inside args if any contain an aggregate.
+            if args.iter().any(has_agg_function) {
+                let new_args = args
+                    .iter()
+                    .map(|a| {
+                        if has_agg_function(a) {
+                            rewrite_agg_to_var(a, alias)
+                        } else {
+                            a.clone()
+                        }
+                    })
+                    .collect();
+                Expr::FunctionCall {
+                    name: name.clone(),
+                    args: new_args,
+                    distinct: *distinct,
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::BinaryOp { op, left, right } => {
+            if has_agg_function(left) {
+                Expr::BinaryOp {
+                    op: *op,
+                    left: Box::new(rewrite_agg_to_var(left, alias)),
+                    right: right.clone(),
+                }
+            } else if has_agg_function(right) {
+                Expr::BinaryOp {
+                    op: *op,
+                    left: left.clone(),
+                    right: Box::new(rewrite_agg_to_var(right, alias)),
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::UnaryOp { op, expr: inner } => Expr::UnaryOp {
+            op: *op,
+            expr: Box::new(rewrite_agg_to_var(inner, alias)),
+        },
+        Expr::MapLiteral(pairs) => {
+            let new_pairs = pairs
+                .iter()
+                .map(|(k, v)| {
+                    if has_agg_function(v) {
+                        (k.clone(), rewrite_agg_to_var(v, alias))
+                    } else {
+                        (k.clone(), v.clone())
+                    }
+                })
+                .collect();
+            Expr::MapLiteral(new_pairs)
+        }
+        Expr::ListComp {
+            variable,
+            list,
+            filter,
+            map,
+        } => Expr::ListComp {
+            variable: variable.clone(),
+            list: if has_agg_function(list) {
+                Box::new(rewrite_agg_to_var(list, alias))
+            } else {
+                list.clone()
+            },
+            filter: filter.clone(),
+            map: if has_agg_function(map) {
+                Box::new(rewrite_agg_to_var(map, alias))
+            } else {
+                map.clone()
+            },
+        },
+        _ => expr.clone(),
+    }
+}
+
+/// Check if an expression contains an aggregation function.
+pub(crate) fn contains_aggregation(expr: &Expr) -> bool {
+    match expr {
+        Expr::FunctionCall { name, args, .. } => {
+            if crate::planner::is_aggregate_function(name.as_str()) {
+                return true;
+            }
+            args.iter().any(contains_aggregation)
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            contains_aggregation(left) || contains_aggregation(right)
+        }
+        Expr::UnaryOp { expr: inner, .. } => contains_aggregation(inner),
+        _ => false,
+    }
+}
