@@ -286,3 +286,201 @@ fn execute_parse_error_variant() {
         .unwrap_err();
     assert!(matches!(err, GqlError::Parse(_)));
 }
+
+// ── mutation pathways ───────────────────────────────────────────────────
+
+#[test]
+fn mutation_set_property_persists() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    engine
+        .execute(&store, "test", "CREATE (:T {n: 1})")
+        .unwrap();
+    engine
+        .execute(&store, "test", "MATCH (x:T) SET x.n = 42")
+        .unwrap();
+    let r = engine
+        .execute(&store, "test", "MATCH (x:T) RETURN x.n AS n")
+        .unwrap();
+    assert_eq!(r.rows[0]["n"], Value::Int(42));
+}
+
+#[test]
+fn mutation_delete_removes_node() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    engine.execute(&store, "test", "CREATE (:Doomed)").unwrap();
+    engine
+        .execute(&store, "test", "MATCH (x:Doomed) DELETE x")
+        .unwrap();
+    let r = engine
+        .execute(&store, "test", "MATCH (x:Doomed) RETURN count(x) AS c")
+        .unwrap();
+    assert_eq!(r.rows[0]["c"], Value::Int(0));
+}
+
+#[test]
+fn mutation_merge_creates_then_matches() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    engine
+        .execute(&store, "test", "MERGE (:Tag {name: 'x'})")
+        .unwrap();
+    engine
+        .execute(&store, "test", "MERGE (:Tag {name: 'x'})")
+        .unwrap();
+    let r = engine
+        .execute(&store, "test", "MATCH (t:Tag) RETURN count(t) AS c")
+        .unwrap();
+    assert_eq!(r.rows[0]["c"], Value::Int(1));
+}
+
+#[test]
+fn mutation_remove_property_via_cached_plan() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    engine
+        .execute(&store, "test", "CREATE (:R {tmp: 1})")
+        .unwrap();
+    let q = "MATCH (x:R) REMOVE x.tmp";
+    engine.execute(&store, "test", q).unwrap();
+    // Insert a fresh node and re-run to exercise the cached plan against fresh data.
+    engine
+        .execute(&store, "test", "CREATE (:R {tmp: 2})")
+        .unwrap();
+    engine.execute(&store, "test", q).unwrap();
+    let r = engine
+        .execute(
+            &store,
+            "test",
+            "MATCH (x:R) WHERE x.tmp IS NULL RETURN count(x) AS c",
+        )
+        .unwrap();
+    assert_eq!(r.rows[0]["c"], Value::Int(2));
+}
+
+// ── empty-graph queries ─────────────────────────────────────────────────
+
+#[test]
+fn match_on_empty_graph_yields_no_rows() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let r = engine
+        .execute(&store, "test", "MATCH (n) RETURN n")
+        .unwrap();
+    assert_eq!(r.rows.len(), 0);
+}
+
+#[test]
+fn count_on_empty_graph_is_zero() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let r = engine
+        .execute(&store, "test", "MATCH (n) RETURN count(n) AS c")
+        .unwrap();
+    assert_eq!(r.rows[0]["c"], Value::Int(0));
+}
+
+// ── parameter validation / variety ──────────────────────────────────────
+
+#[test]
+fn execute_with_parameters_list_value() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let mut params = HashMap::new();
+    params.insert(
+        "xs".to_string(),
+        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+    );
+    let registry = ProcedureRegistry::new();
+    let r = engine
+        .execute_with_parameters(&store, "test", "RETURN $xs AS xs", &params, &registry)
+        .unwrap();
+    assert_eq!(
+        r.rows[0]["xs"],
+        Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)])
+    );
+}
+
+#[test]
+fn execute_with_parameters_unused_param_is_ok() {
+    // Parameters supplied but not referenced should not cause failure.
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let mut params = HashMap::new();
+    params.insert("unused".to_string(), Value::Int(123));
+    let registry = ProcedureRegistry::new();
+    let r = engine
+        .execute_with_parameters(&store, "test", "RETURN 1 AS n", &params, &registry)
+        .unwrap();
+    assert_eq!(r.rows[0]["n"], Value::Int(1));
+}
+
+#[test]
+fn execute_with_parameters_null_value() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let mut params = HashMap::new();
+    params.insert("x".to_string(), Value::Null);
+    let registry = ProcedureRegistry::new();
+    let r = engine
+        .execute_with_parameters(&store, "test", "RETURN $x AS v", &params, &registry)
+        .unwrap();
+    assert_eq!(r.rows[0]["v"], Value::Null);
+}
+
+// ── graph isolation ─────────────────────────────────────────────────────
+
+#[test]
+fn writes_in_one_graph_invisible_to_another() {
+    let engine = CypherEngine::new();
+    let store = InMemoryGraphStore::default();
+    store.create_graph("a").unwrap();
+    store.create_graph("b").unwrap();
+    engine.execute(&store, "a", "CREATE (:OnlyInA)").unwrap();
+    let r = engine
+        .execute(&store, "b", "MATCH (n:OnlyInA) RETURN count(n) AS c")
+        .unwrap();
+    assert_eq!(r.rows[0]["c"], Value::Int(0));
+}
+
+#[test]
+fn execute_against_unknown_graph_errors() {
+    let engine = CypherEngine::new();
+    let store = InMemoryGraphStore::default();
+    // Note: no create_graph call.
+    let result = engine.execute(&store, "missing", "RETURN 1 AS n");
+    // Either parse-time, planner-time, or executor-time the missing graph
+    // surfaces as an error; we only assert that an error is produced and
+    // the engine does not panic.
+    assert!(result.is_err());
+}
+
+// ── plan cache + DDL invalidation flow ──────────────────────────────────
+
+#[test]
+fn clear_cache_resets_cache_len_to_zero() {
+    let engine = CypherEngine::new();
+    let store = test_store();
+    engine.execute(&store, "test", "RETURN 1 AS n").unwrap();
+    engine.execute(&store, "test", "RETURN 2 AS n").unwrap();
+    engine.execute(&store, "test", "RETURN 3 AS n").unwrap();
+    assert_eq!(engine.cache_len(), 3);
+    engine.clear_cache();
+    assert_eq!(engine.cache_len(), 0);
+}
+
+#[test]
+fn cached_plan_observes_subsequent_writes() {
+    // Cached MATCH must see CREATEs that happen between executions.
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let q = "MATCH (n:Item) RETURN count(n) AS c";
+    let r0 = engine.execute(&store, "test", q).unwrap();
+    assert_eq!(r0.rows[0]["c"], Value::Int(0));
+    engine
+        .execute(&store, "test", "CREATE (:Item), (:Item)")
+        .unwrap();
+    let r1 = engine.execute(&store, "test", q).unwrap();
+    assert_eq!(r1.rows[0]["c"], Value::Int(2));
+}
