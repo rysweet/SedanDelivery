@@ -37,6 +37,18 @@
 //! - `sd2-redis-store` / `sd2-redis-module` — Redis/Valkey integration
 //! - `gql-cli` — command-line interface
 
+#[cfg(test)]
+extern crate self as cypher_core;
+
+#[cfg(test)]
+mod coverage_smoke_tests;
+
+#[cfg(test)]
+mod coverage_targeted_tests;
+
+#[cfg(test)]
+mod coverage_targeted_tests2;
+
 pub mod ast;
 pub mod changelog;
 pub mod config;
