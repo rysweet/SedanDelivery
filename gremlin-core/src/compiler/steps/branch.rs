@@ -54,10 +54,8 @@ impl GremlinCompiler {
                                     .entry(lbl.clone())
                                     .or_default()
                                     .insert(0, shadow.clone());
-                                pop_origins.push((
-                                    shadow.as_str().to_string(),
-                                    orig.as_str().to_string(),
-                                ));
+                                pop_origins
+                                    .push((shadow.as_str().to_string(), orig.as_str().to_string()));
                             }
                         }
                     }
@@ -476,7 +474,8 @@ impl GremlinCompiler {
                         } else if !input_bound {
                             // First new label — bind to the ctx.current traverser.
                             input_bound = true;
-                            sub.alias_map.insert(label.clone(), ctx.current_alias.clone());
+                            sub.alias_map
+                                .insert(label.clone(), ctx.current_alias.clone());
                             sub.compile_with_seed(&pattern_steps[1..], ctx.current_alias.clone())?
                         } else {
                             // Subsequent new label — create an explicit
@@ -576,17 +575,17 @@ impl GremlinCompiler {
                     // Endpoint constraint: if the sub-traversal ends with
                     // as("label") referencing a bound match variable, the
                     // result must equal that variable's value.
-                    let endpoint_target =
-                        if let Some(GremlinStep::As(label)) = compile_steps.last() {
-                            // Look up the label in the match label_map (use
-                            // the alias that was bound by the join patterns).
-                            label_map
-                                .iter()
-                                .find(|(l, _)| l == label)
-                                .map(|(_, a)| a.clone())
-                        } else {
-                            None
-                        };
+                    let endpoint_target = if let Some(GremlinStep::As(label)) = compile_steps.last()
+                    {
+                        // Look up the label in the match label_map (use
+                        // the alias that was bound by the join patterns).
+                        label_map
+                            .iter()
+                            .find(|(l, _)| l == label)
+                            .map(|(_, a)| a.clone())
+                    } else {
+                        None
+                    };
 
                     let inner_op = sub.compile_seeded(compile_steps, &seed_alias)?;
                     self.absorb(&sub);

@@ -45,10 +45,7 @@ impl GremlinCompiler {
                 self.path_tracking.clear();
             }
 
-            _ => unreachable!(
-                "compile_path_step received non-path variant: {:?}",
-                step
-            ),
+            _ => unreachable!("compile_path_step received non-path variant: {:?}", step),
         }
         #[allow(unreachable_code)]
         Ok(StepFlow::Proceed)

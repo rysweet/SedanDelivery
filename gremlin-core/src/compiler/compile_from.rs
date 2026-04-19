@@ -55,11 +55,8 @@ impl GremlinCompiler {
         // repeat() bodies) can resolve to __gremlin_agg_<key> at compile time.
         collect_aggregate_keys_prescan(steps, &mut self.aggregate_keys);
 
-        let mut ctx = CompileFromContext::new(
-            initial_op,
-            initial_alias.clone(),
-            initial_path_aliases,
-        );
+        let mut ctx =
+            CompileFromContext::new(initial_op, initial_alias.clone(), initial_path_aliases);
         // Sync path_tracking from initial_path_aliases
         self.path_tracking = ctx.path_aliases.clone();
 
@@ -145,7 +142,9 @@ impl GremlinCompiler {
                     ctx.path_by_keys.clear();
                 }
                 ctx.pending_project = false;
-                if !ctx.pending_where_by_targets.is_empty() && !ctx.pending_where_by_modulators.is_empty() {
+                if !ctx.pending_where_by_targets.is_empty()
+                    && !ctx.pending_where_by_modulators.is_empty()
+                {
                     if let Some(Operator::Filter {
                         ref mut predicate, ..
                     }) = ctx.current
@@ -342,7 +341,11 @@ impl GremlinCompiler {
 
         // Flush pending select by-mods (handles by(T.key) as last step)
         if ctx.pending_select && !ctx.select_by_mods.is_empty() {
-            self.apply_pending_select_mods(&mut ctx.current, &mut ctx.current_alias, &ctx.select_by_mods)?;
+            self.apply_pending_select_mods(
+                &mut ctx.current,
+                &mut ctx.current_alias,
+                &ctx.select_by_mods,
+            )?;
         }
 
         // Flush accumulated path by-keys into the GremlinPath/CyclicPath operator

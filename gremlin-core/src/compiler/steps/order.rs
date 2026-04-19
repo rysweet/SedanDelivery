@@ -93,8 +93,7 @@ impl GremlinCompiler {
                                         } else if i < ctx.project_by_count {
                                             // Previously filled by By() — check if identity.
                                             // If items[i].0 is Expr::Variable it was empty by().
-                                            let is_ident =
-                                                matches!(&items[i].0, Expr::Variable(_));
+                                            let is_ident = matches!(&items[i].0, Expr::Variable(_));
                                             let prop_op = Operator::Project {
                                                 items: vec![(
                                                     items[i].0.clone(),
@@ -105,9 +104,9 @@ impl GremlinCompiler {
                                             entries.push((
                                                 ctx.project_keys[i].clone(),
                                                 prop_op,
-                                                alias_opt.as_ref().cloned().unwrap_or_else(
-                                                    || Identifier::new(&ctx.project_keys[i]),
-                                                ),
+                                                alias_opt.as_ref().cloned().unwrap_or_else(|| {
+                                                    Identifier::new(&ctx.project_keys[i])
+                                                }),
                                                 is_ident,
                                             ));
                                         } else {
@@ -122,9 +121,9 @@ impl GremlinCompiler {
                                             entries.push((
                                                 ctx.project_keys[i].clone(),
                                                 prop_op,
-                                                alias_opt.as_ref().cloned().unwrap_or_else(
-                                                    || Identifier::new(&ctx.project_keys[i]),
-                                                ),
+                                                alias_opt.as_ref().cloned().unwrap_or_else(|| {
+                                                    Identifier::new(&ctx.project_keys[i])
+                                                }),
                                                 false,
                                             ));
                                         }
@@ -201,7 +200,8 @@ impl GremlinCompiler {
                     } else if ctx.pending_select {
                         // by(traversal) after select() — preserve the
                         // real traversal for per-key execution.
-                        ctx.select_by_mods.push(SelectByModulator::Traversal(sub_steps.to_vec()));
+                        ctx.select_by_mods
+                            .push(SelectByModulator::Traversal(sub_steps.to_vec()));
                     } else if ctx.pending_path {
                         // by(traversal) after path() — extract property key
                         // from patterns like by(values('name').toUpper())
@@ -225,7 +225,8 @@ impl GremlinCompiler {
                         });
                         ctx.pending_dedup = false;
                     } else if !ctx.pending_where_by_targets.is_empty() {
-                        ctx.pending_where_by_modulators.push(extract_by_traversal_key(sub_steps));
+                        ctx.pending_where_by_modulators
+                            .push(extract_by_traversal_key(sub_steps));
                     } else if ctx.pending_group {
                         // by(traversal) after group() — compile sub-traversal for key or value
                         if ctx.pending_group_by_count == 0 {
@@ -275,9 +276,10 @@ impl GremlinCompiler {
                                 // from unfold() (i.e., a Map.Entry), mark the sub-compiler
                                 // so that select(Column.keys/values) uses map-entry semantics
                                 // (returning the key/value directly, not a collection).
-                                let outer_child_is_unwind = if let Some(
-                                    Operator::GremlinGroup { child, .. },
-                                ) = &ctx.current
+                                let outer_child_is_unwind = if let Some(Operator::GremlinGroup {
+                                    child,
+                                    ..
+                                }) = &ctx.current
                                 {
                                     matches!(child.as_ref(), Operator::Unwind { .. })
                                 } else {
@@ -377,10 +379,7 @@ impl GremlinCompiler {
                 }
             }
 
-            _ => unreachable!(
-                "compile_order_step received non-order variant: {:?}",
-                step
-            ),
+            _ => unreachable!("compile_order_step received non-order variant: {:?}", step),
         }
         #[allow(unreachable_code)]
         Ok(StepFlow::Proceed)

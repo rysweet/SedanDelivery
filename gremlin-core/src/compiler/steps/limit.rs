@@ -293,10 +293,7 @@ impl GremlinCompiler {
                 ctx.current_alias = alias;
             }
 
-            _ => unreachable!(
-                "compile_limit_step received non-limit variant: {:?}",
-                step
-            ),
+            _ => unreachable!("compile_limit_step received non-limit variant: {:?}", step),
         }
         #[allow(unreachable_code)]
         Ok(StepFlow::Proceed)

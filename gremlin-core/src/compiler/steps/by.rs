@@ -277,8 +277,7 @@ impl GremlinCompiler {
                                     }
                                 }
                             } else if let Some(Operator::GremlinGroup {
-                                ref mut key_expr,
-                                ..
+                                ref mut key_expr, ..
                             }) = ctx.current
                             {
                                 *key_expr = make_by_expr(key, &ctx.pre_group_alias);
@@ -385,9 +384,8 @@ impl GremlinCompiler {
                         if let Ok(sub_steps) =
                             crate::text_parser::parse_inner_traversal(key, &no_param)
                         {
-                            ctx.select_by_mods.push(SelectByModulator::Key(
-                                extract_by_traversal_key(&sub_steps),
-                            ));
+                            ctx.select_by_mods
+                                .push(SelectByModulator::Key(extract_by_traversal_key(&sub_steps)));
                         } else {
                             ctx.select_by_mods.push(SelectByModulator::Key(key.clone()));
                         }
@@ -416,8 +414,7 @@ impl GremlinCompiler {
                                         .join("\x1f");
                                     *by_key = Some(new_key);
                                 } else {
-                                    *by_key =
-                                        Some(format!("__dedup_prop__{}__{}", key, existing));
+                                    *by_key = Some(format!("__dedup_prop__{}__{}", key, existing));
                                 }
                             } else {
                                 *by_key =
@@ -527,9 +524,7 @@ impl GremlinCompiler {
                                                                 expr.clone(),
                                                                 alias_opt.clone(),
                                                             )],
-                                                            child: Box::new(
-                                                                Operator::SingleRow,
-                                                            ),
+                                                            child: Box::new(Operator::SingleRow),
                                                         };
                                                         // Prior entries may have been set by
                                                         // empty by() (identity). We can't
@@ -570,7 +565,8 @@ impl GremlinCompiler {
                                                 let mut entries = old_entries.clone();
                                                 if ctx.project_by_count < entries.len() {
                                                     entries[ctx.project_by_count] = (
-                                                        ctx.project_keys[ctx.project_by_count].clone(),
+                                                        ctx.project_keys[ctx.project_by_count]
+                                                            .clone(),
                                                         sub_op,
                                                         sub_out_alias,
                                                         false, // by(traversal) — not identity
@@ -603,9 +599,8 @@ impl GremlinCompiler {
                                         // This is correct for by("propName") but may lose
                                         // semantics for complex by(traversal) modulations.
                                         let by_expr = make_by_expr(key, &ctx.pre_project_alias);
-                                        if let Some(Operator::Project {
-                                            ref mut items, ..
-                                        }) = ctx.current
+                                        if let Some(Operator::Project { ref mut items, .. }) =
+                                            ctx.current
                                         {
                                             if let Some((expr, _)) =
                                                 items.get_mut(ctx.project_by_count)
@@ -659,8 +654,7 @@ impl GremlinCompiler {
                                     *expr = by_expr;
                                 }
                             } else if let Some(Operator::GremlinProject {
-                                ref mut entries,
-                                ..
+                                ref mut entries, ..
                             }) = ctx.current
                             {
                                 // Already converted to GremlinProject — update the entry
@@ -774,10 +768,7 @@ impl GremlinCompiler {
                 }
             }
 
-            _ => unreachable!(
-                "compile_by_step received non-by variant: {:?}",
-                step
-            ),
+            _ => unreachable!("compile_by_step received non-by variant: {:?}", step),
         }
         #[allow(unreachable_code)]
         Ok(StepFlow::Proceed)

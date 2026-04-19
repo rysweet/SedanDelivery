@@ -209,12 +209,11 @@ impl GremlinCompiler {
                     // Check if the sub-traversal ends with as("label")
                     // referencing an already-bound variable.  If so, the
                     // endpoint must be constrained to match that binding.
-                    let endpoint_target =
-                        if let Some(GremlinStep::As(label)) = steps_slice.last() {
-                            self.alias_map.get(label).cloned()
-                        } else {
-                            None
-                        };
+                    let endpoint_target = if let Some(GremlinStep::As(label)) = steps_slice.last() {
+                        self.alias_map.get(label).cloned()
+                    } else {
+                        None
+                    };
 
                     let inner_op = sub.compile_seeded(steps_slice, &seed_alias)?;
                     // For not()/where() sub-traversals, only advance the
@@ -351,40 +350,37 @@ impl GremlinCompiler {
 
             GremlinStep::Is(predicate) => {
                 let child = ctx.current.take().ok_or(CompileError::MissingChild)?;
-                let pred_expr =
-                    if let Predicate::IsType(GremlinValue::String(expected)) = predicate {
-                        if let Some(ref subtype) = self.numeric_subtype {
-                            if subtype == expected {
-                                Expr::Bool(true)
-                            } else {
-                                Expr::Bool(false)
-                            }
+                let pred_expr = if let Predicate::IsType(GremlinValue::String(expected)) = predicate
+                {
+                    if let Some(ref subtype) = self.numeric_subtype {
+                        if subtype == expected {
+                            Expr::Bool(true)
                         } else {
-                            predicate_to_expr(predicate, &ctx.current_alias)
+                            Expr::Bool(false)
                         }
-                    } else if let Some(label_expr) =
-                        predicate_label_ref(predicate, &self.alias_map, &self.aggregate_keys)
-                    {
-                        let op = predicate_to_binary_op(predicate);
-                        Expr::BinaryOp {
-                            op,
-                            left: Box::new(Expr::Variable(ctx.current_alias.clone())),
-                            right: Box::new(label_expr),
-                        }
-                    } else if predicate_has_label_refs(
-                        predicate,
-                        &self.alias_map,
-                        &self.aggregate_keys,
-                    ) {
-                        predicate_to_label_aware_expr(
-                            predicate,
-                            &Expr::Variable(ctx.current_alias.clone()),
-                            &self.alias_map,
-                            &self.aggregate_keys,
-                        )
                     } else {
                         predicate_to_expr(predicate, &ctx.current_alias)
-                    };
+                    }
+                } else if let Some(label_expr) =
+                    predicate_label_ref(predicate, &self.alias_map, &self.aggregate_keys)
+                {
+                    let op = predicate_to_binary_op(predicate);
+                    Expr::BinaryOp {
+                        op,
+                        left: Box::new(Expr::Variable(ctx.current_alias.clone())),
+                        right: Box::new(label_expr),
+                    }
+                } else if predicate_has_label_refs(predicate, &self.alias_map, &self.aggregate_keys)
+                {
+                    predicate_to_label_aware_expr(
+                        predicate,
+                        &Expr::Variable(ctx.current_alias.clone()),
+                        &self.alias_map,
+                        &self.aggregate_keys,
+                    )
+                } else {
+                    predicate_to_expr(predicate, &ctx.current_alias)
+                };
                 ctx.current = Some(Operator::Filter {
                     predicate: pred_expr,
                     child: Box::new(child),

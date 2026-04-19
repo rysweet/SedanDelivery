@@ -28,7 +28,8 @@ impl GremlinCompiler {
     ) -> Result<StepFlow, CompileError> {
         match step {
             GremlinStep::As(alias) => {
-                self.alias_map.insert(alias.clone(), ctx.current_alias.clone());
+                self.alias_map
+                    .insert(alias.clone(), ctx.current_alias.clone());
                 self.label_stacks
                     .entry(alias.clone())
                     .or_default()
@@ -84,9 +85,7 @@ impl GremlinCompiler {
                                             Expr::List(
                                                 lbls.iter()
                                                     .map(|l| {
-                                                        Expr::Str(
-                                                            l.to_string().into_boxed_str(),
-                                                        )
+                                                        Expr::Str(l.to_string().into_boxed_str())
                                                     })
                                                     .collect(),
                                             ),

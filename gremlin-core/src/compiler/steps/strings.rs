@@ -208,8 +208,10 @@ impl GremlinCompiler {
             GremlinStep::Substring(start, len) => {
                 let child = ctx.current.take().ok_or(CompileError::MissingChild)?;
                 let alias = self.next_alias("substr");
-                let mut args =
-                    vec![Expr::Variable(ctx.current_alias.clone()), Expr::Integer(*start)];
+                let mut args = vec![
+                    Expr::Variable(ctx.current_alias.clone()),
+                    Expr::Integer(*start),
+                ];
                 if let Some(l) = len {
                     args.push(Expr::Integer(*l));
                 }
@@ -232,8 +234,10 @@ impl GremlinCompiler {
             GremlinStep::SubstringLocal(start, len) => {
                 let child = ctx.current.take().ok_or(CompileError::MissingChild)?;
                 let alias = self.next_alias("substrl");
-                let mut args =
-                    vec![Expr::Variable(ctx.current_alias.clone()), Expr::Integer(*start)];
+                let mut args = vec![
+                    Expr::Variable(ctx.current_alias.clone()),
+                    Expr::Integer(*start),
+                ];
                 if let Some(l) = len {
                     args.push(Expr::Integer(*l));
                 }
@@ -354,9 +358,7 @@ impl GremlinCompiler {
                     let label_pairs: Vec<(SmolStr, Expr)> = self
                         .alias_map
                         .iter()
-                        .map(|(label, ident)| {
-                            (SmolStr::new(label), Expr::Variable(ident.clone()))
-                        })
+                        .map(|(label, ident)| (SmolStr::new(label), Expr::Variable(ident.clone())))
                         .collect();
                     let mut args = vec![
                         Expr::Variable(ctx.current_alias.clone()),

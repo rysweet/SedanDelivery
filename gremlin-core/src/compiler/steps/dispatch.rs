@@ -29,8 +29,7 @@ impl GremlinCompiler {
             GremlinStep::V(..)
             | GremlinStep::E(..)
             | GremlinStep::Constant(..)
-            | GremlinStep::Inject(..) =>
-                self.compile_source_step(step, ctx),
+            | GremlinStep::Inject(..) => self.compile_source_step(step, ctx),
             GremlinStep::Out(..)
             | GremlinStep::In(..)
             | GremlinStep::Both(..)
@@ -41,8 +40,7 @@ impl GremlinCompiler {
             | GremlinStep::OutV
             | GremlinStep::OtherV
             | GremlinStep::BothV
-            | GremlinStep::ToE(..) =>
-                self.compile_traversal_step(step, ctx),
+            | GremlinStep::ToE(..) => self.compile_traversal_step(step, ctx),
             GremlinStep::HasLabel(..)
             | GremlinStep::Has(..)
             | GremlinStep::HasPredicate(..)
@@ -70,8 +68,7 @@ impl GremlinCompiler {
             | GremlinStep::Lt(..)
             | GremlinStep::Lte(..)
             | GremlinStep::Within(..)
-            | GremlinStep::Without(..) =>
-                self.compile_filter_step(step, ctx),
+            | GremlinStep::Without(..) => self.compile_filter_step(step, ctx),
             GremlinStep::Values(..)
             | GremlinStep::ValueMap(..)
             | GremlinStep::Properties(..)
@@ -85,8 +82,7 @@ impl GremlinCompiler {
             | GremlinStep::ElementMap(..)
             | GremlinStep::Map(..)
             | GremlinStep::FlatMap(..)
-            | GremlinStep::Tree(..) =>
-                self.compile_projection_step(step, ctx),
+            | GremlinStep::Tree(..) => self.compile_projection_step(step, ctx),
             GremlinStep::AddV(..)
             | GremlinStep::AddVTraversal(..)
             | GremlinStep::AddE(..)
@@ -95,8 +91,7 @@ impl GremlinCompiler {
             | GremlinStep::Property(..)
             | GremlinStep::From(..)
             | GremlinStep::To(..)
-            | GremlinStep::Drop =>
-                self.compile_mutation_step(step, ctx),
+            | GremlinStep::Drop => self.compile_mutation_step(step, ctx),
             GremlinStep::Count
             | GremlinStep::Sum
             | GremlinStep::Min
@@ -110,8 +105,7 @@ impl GremlinCompiler {
             | GremlinStep::GroupCount(..)
             | GremlinStep::Fold
             | GremlinStep::FoldSeed(..)
-            | GremlinStep::Unfold =>
-                self.compile_aggregation_step(step, ctx),
+            | GremlinStep::Unfold => self.compile_aggregation_step(step, ctx),
             GremlinStep::Repeat(..)
             | GremlinStep::Times(..)
             | GremlinStep::Until(..)
@@ -122,13 +116,9 @@ impl GremlinCompiler {
             | GremlinStep::Union(..)
             | GremlinStep::Match(..)
             | GremlinStep::Optional(..)
-            | GremlinStep::Option(..) =>
-                self.compile_branch_step(step, ctx),
-            GremlinStep::Order
-            | GremlinStep::ByTraversal(..) =>
-                self.compile_order_step(step, ctx),
-            GremlinStep::By(..) =>
-                self.compile_by_step(step, ctx),
+            | GremlinStep::Option(..) => self.compile_branch_step(step, ctx),
+            GremlinStep::Order | GremlinStep::ByTraversal(..) => self.compile_order_step(step, ctx),
+            GremlinStep::By(..) => self.compile_by_step(step, ctx),
             GremlinStep::Limit(..)
             | GremlinStep::Range(..)
             | GremlinStep::LimitLocal(..)
@@ -141,8 +131,7 @@ impl GremlinCompiler {
             | GremlinStep::Skip(..)
             | GremlinStep::Sample(..)
             | GremlinStep::SampleLocal(..)
-            | GremlinStep::DedupLocal(..) =>
-                self.compile_limit_step(step, ctx),
+            | GremlinStep::DedupLocal(..) => self.compile_limit_step(step, ctx),
             GremlinStep::As(..)
             | GremlinStep::Select(..)
             | GremlinStep::SideEffect(..)
@@ -157,10 +146,8 @@ impl GremlinCompiler {
             | GremlinStep::SackOp(..)
             | GremlinStep::WithSack(..)
             | GremlinStep::WithBulkFalse
-            | GremlinStep::WithSideEffect(..) =>
-                self.compile_side_effect_step(step, ctx),
-            GremlinStep::Path =>
-                self.compile_path_step(step, ctx),
+            | GremlinStep::WithSideEffect(..) => self.compile_side_effect_step(step, ctx),
+            GremlinStep::Path => self.compile_path_step(step, ctx),
             GremlinStep::ToLower
             | GremlinStep::ToUpper
             | GremlinStep::Trim
@@ -183,15 +170,13 @@ impl GremlinCompiler {
             | GremlinStep::AsBool
             | GremlinStep::Math(..)
             | GremlinStep::TypeOf
-            | GremlinStep::AsDate =>
-                self.compile_strings_step(step, ctx),
+            | GremlinStep::AsDate => self.compile_strings_step(step, ctx),
             GremlinStep::Combine(..)
             | GremlinStep::Intersect(..)
             | GremlinStep::Difference(..)
             | GremlinStep::Disjunct(..)
             | GremlinStep::MergeList(..)
-            | GremlinStep::Product(..) =>
-                self.compile_set_ops_step(step, ctx),
+            | GremlinStep::Product(..) => self.compile_set_ops_step(step, ctx),
             GremlinStep::ProductiveByStrategy
             | GremlinStep::SeedStrategy(..)
             | GremlinStep::ReadOnlyStrategy
@@ -206,8 +191,7 @@ impl GremlinCompiler {
             | GremlinStep::PeerPressure
             | GremlinStep::Io(..)
             | GremlinStep::DateAdd(..)
-            | GremlinStep::DateDiff(..) =>
-                self.compile_misc_step(step, ctx),
+            | GremlinStep::DateDiff(..) => self.compile_misc_step(step, ctx),
         }
     }
 }

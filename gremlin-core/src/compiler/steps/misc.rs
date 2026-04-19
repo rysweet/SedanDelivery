@@ -78,10 +78,7 @@ impl GremlinCompiler {
             GremlinStep::DateDiff(_) => {
                 return Err(CompileError::UnsupportedStep("dateDiff".into()));
             }
-            _ => unreachable!(
-                "compile_misc_step received non-misc variant: {:?}",
-                step
-            ),
+            _ => unreachable!("compile_misc_step received non-misc variant: {:?}", step),
         }
         #[allow(unreachable_code)]
         Ok(StepFlow::Proceed)

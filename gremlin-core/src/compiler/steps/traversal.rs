@@ -53,9 +53,7 @@ impl GremlinCompiler {
                 self.path_tracking.push(ctx.current_alias.clone());
             }
 
-            GremlinStep::OutE(labels)
-            | GremlinStep::InE(labels)
-            | GremlinStep::BothE(labels) => {
+            GremlinStep::OutE(labels) | GremlinStep::InE(labels) | GremlinStep::BothE(labels) => {
                 let child = ctx.current.take().ok_or(CompileError::MissingChild)?;
                 let rel_alias = self.next_alias("e");
                 let dst = self.next_alias("v");

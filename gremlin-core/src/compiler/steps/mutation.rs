@@ -222,7 +222,8 @@ impl GremlinCompiler {
                         return Err(CompileError::ReservedKeyViolation(resolved_key));
                     }
                 }
-                ctx.pending_properties.push((resolved_key.clone(), value.clone()));
+                ctx.pending_properties
+                    .push((resolved_key.clone(), value.clone()));
                 let child = ctx.current.take().ok_or(CompileError::MissingChild)?;
                 // Resolve property value: if __.select("a"), emit Variable ref
                 let val_expr = if let GremlinValue::String(s) = value {
@@ -314,8 +315,7 @@ impl GremlinCompiler {
                         }
                     }
                     // Bare string label reference: from("a")
-                    if let GremlinStep::Constant(GremlinValue::String(label)) = &inner_steps[0]
-                    {
+                    if let GremlinStep::Constant(GremlinValue::String(label)) = &inner_steps[0] {
                         // Resolve user-facing label to internal alias
                         let resolved = self
                             .alias_map

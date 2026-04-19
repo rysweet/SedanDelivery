@@ -246,17 +246,13 @@ impl GremlinCompiler {
                             };
                             let right = Operator::Project {
                                 items: {
-                                    let mut items = vec![(
-                                        Expr::Variable(alias),
-                                        Some(union_alias.clone()),
-                                    )];
+                                    let mut items =
+                                        vec![(Expr::Variable(alias), Some(union_alias.clone()))];
                                     // Carry side-effect columns into injected
                                     // rows so select("k") can find them.
                                     for (se_key, se_ident) in &self.alias_map {
                                         if se_ident.0.starts_with("__side_effect_") {
-                                            if let Some(val) =
-                                                self.side_effect_values.get(se_key)
-                                            {
+                                            if let Some(val) = self.side_effect_values.get(se_key) {
                                                 items.push((
                                                     gremlin_value_to_expr(val),
                                                     Some(se_ident.clone()),
