@@ -4,6 +4,7 @@ mod arithmetic;
 mod comparison;
 mod dedup;
 mod expr_naming;
+mod node_value;
 
 // Re-export the full public API so that all existing `use super::helpers::X`
 // paths continue to work without modification.
@@ -13,6 +14,7 @@ pub use self::comparison::gremlin_cmp_values;
 pub(crate) use self::dedup::row_key;
 pub(crate) use self::dedup::RowDedupSet;
 pub(crate) use self::expr_naming::expr_to_column_name;
+pub(crate) use self::node_value::{extract_node_id, undefined_var};
 
 use indexmap::IndexMap;
 use std::collections::HashMap;
@@ -26,26 +28,6 @@ use crate::storage::{GraphStore, NodeId};
 use crate::types::Value;
 
 use super::Row;
-
-/// Extract a `NodeId` from a `Value::Node(id)`, returning an error if the
-/// value is not a node reference.
-pub(crate) fn extract_node_id(val: &Value, var: &str) -> Result<NodeId, GqlError> {
-    match val {
-        Value::Node(id) => Ok(*id),
-        other => Err(GqlError::Execution(ExecutionError::TypeMismatch {
-            expected: format!("Node for variable '{var}'"),
-            actual: other.type_name().to_string(),
-        })),
-    }
-}
-
-/// Build an error for an undefined variable.
-pub(crate) fn undefined_var(name: &str) -> GqlError {
-    GqlError::Execution(ExecutionError::TypeMismatch {
-        expected: format!("variable '{name}' in scope"),
-        actual: "undefined".to_string(),
-    })
-}
 
 pub(crate) fn get_adj_entries(
     store: &dyn GraphStore,
@@ -329,19 +311,6 @@ pub(crate) fn eval_prop_map(
 mod tests {
     use super::*;
     use crate::ast::{Identifier, Label};
-
-    #[test]
-    fn extract_node_id_success() {
-        assert_eq!(
-            extract_node_id(&Value::Node(NodeId(42)), "n").unwrap(),
-            NodeId(42)
-        );
-    }
-
-    #[test]
-    fn extract_node_id_wrong_type() {
-        assert!(extract_node_id(&Value::Int(1), "n").is_err());
-    }
 
     #[test]
     fn inject_params_no_overwrite() {
