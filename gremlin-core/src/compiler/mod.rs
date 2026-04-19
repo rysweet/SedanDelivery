@@ -399,6 +399,7 @@ mod branches;
 mod compile_from;
 mod compile_from_context;
 mod helpers;
+mod steps;
 use helpers::*;
 
 #[cfg(test)]
