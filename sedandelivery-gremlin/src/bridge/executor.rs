@@ -94,3 +94,85 @@ pub fn execute_gremlin_via_cypher(
 
     Ok(query_result_to_graphson(&result))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cypher_core::storage::InMemoryGraphStore;
+    use std::sync::Arc;
+
+    fn store() -> Arc<InMemoryGraphStore> {
+        Arc::new(InMemoryGraphStore::new())
+    }
+
+    fn bc(steps: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "@type": "g:Bytecode",
+            "@value": { "step": steps }
+        })
+    }
+
+    #[test]
+    fn execute_v_count_on_empty_graph() {
+        let s = store();
+        let body = bc(serde_json::json!([["V"], ["count"]]));
+        let out = execute_gremlin(&*s, "g1", &body).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["@type"], "g:Int64");
+        assert_eq!(out[0]["@value"], 0);
+    }
+
+    #[test]
+    fn execute_v_limit_on_empty_graph_returns_no_rows() {
+        let s = store();
+        let body = bc(serde_json::json!([["V"], ["limit", 5]]));
+        let out = execute_gremlin(&*s, "g2", &body).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn execute_invalid_bytecode_errors() {
+        let s = store();
+        let bad = serde_json::json!({"@type": "g:Bytecode", "@value": {}});
+        assert!(execute_gremlin(&*s, "g3", &bad).is_err());
+    }
+
+    #[test]
+    fn execute_via_cypher_fallback_v_count() {
+        let s = store();
+        let body = bc(serde_json::json!([["V"], ["count"]]));
+        let out = execute_gremlin_via_cypher(&*s, "g4", &body).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["@value"], 0);
+    }
+
+    #[test]
+    fn execute_via_cypher_fallback_empty_bytecode_errors() {
+        let s = store();
+        let bad = bc(serde_json::json!([]));
+        assert!(execute_gremlin_via_cypher(&*s, "g5", &bad).is_err());
+    }
+
+    #[test]
+    fn unwrap_bytecode_value_handles_envelope_and_bare() {
+        let env = serde_json::json!({"@type": "x", "@value": {"a": 1}});
+        assert_eq!(unwrap_bytecode_value(&env), &serde_json::json!({"a": 1}));
+        let bare = serde_json::json!({"a": 1});
+        assert_eq!(unwrap_bytecode_value(&bare), &bare);
+    }
+
+    #[test]
+    fn gremlin_err_returns_unsupported_feature() {
+        let e = gremlin_err("nope");
+        let msg = e.to_string();
+        assert!(msg.to_lowercase().contains("nope"), "msg = {msg}");
+    }
+
+    #[test]
+    fn ensure_graph_exists_creates_then_is_idempotent() {
+        let s = store();
+        crate::bridge::ensure_graph_exists(&*s, "graph_a").unwrap();
+        assert!(s.graph_exists("graph_a").unwrap());
+        crate::bridge::ensure_graph_exists(&*s, "graph_a").unwrap();
+    }
+}

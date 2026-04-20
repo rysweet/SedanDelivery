@@ -140,4 +140,135 @@ mod tests {
         assert_eq!(v["@type"], "g:List");
         assert_eq!(v["@value"].as_array().unwrap().len(), 2);
     }
+
+    #[test]
+    fn bool_is_plain() {
+        assert_eq!(
+            value_to_graphson(&Value::Bool(true)),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value_to_graphson(&Value::Bool(false)),
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn float_is_typed() {
+        let v = value_to_graphson(&Value::Float(3.5));
+        assert_eq!(v["@type"], "g:Double");
+        assert_eq!(v["@value"], 3.5);
+    }
+
+    #[test]
+    fn map_is_typed_with_entries() {
+        let mut m = indexmap::IndexMap::new();
+        m.insert("a".to_string().into_boxed_str(), Value::Int(1));
+        m.insert("b".to_string().into_boxed_str(), Value::Str("x".into()));
+        let v = value_to_graphson(&Value::Map(m));
+        assert_eq!(v["@type"], "g:Map");
+        // Map encodes as flat [k1, v1, k2, v2, ...]
+        let entries = v["@value"].as_array().unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0], serde_json::Value::String("a".into()));
+        assert_eq!(entries[2], serde_json::Value::String("b".into()));
+    }
+
+    #[test]
+    fn node_and_edge_are_typed() {
+        use cypher_core::storage::{EdgeId, NodeId};
+        let n = value_to_graphson(&Value::Node(NodeId(7)));
+        assert_eq!(n["@type"], "g:Vertex");
+        assert_eq!(n["@value"]["id"]["@value"], 7);
+        let e = value_to_graphson(&Value::Edge(EdgeId(11)));
+        assert_eq!(e["@type"], "g:Edge");
+        assert_eq!(e["@value"]["id"]["@value"], 11);
+        assert_eq!(e["@value"]["label"], "edge");
+    }
+
+    #[test]
+    fn path_is_typed() {
+        use cypher_core::storage::{EdgeId, NodeId};
+        let p = Value::Path {
+            nodes: vec![NodeId(1), NodeId(2)],
+            edges: vec![EdgeId(10)],
+        };
+        let v = value_to_graphson(&p);
+        assert_eq!(v["@type"], "g:Path");
+        let objects = v["@value"]["objects"].as_array().unwrap();
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0]["@type"], "g:Vertex");
+        assert!(v["@value"]["labels"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn unmapped_variant_falls_back_to_debug_string() {
+        // Bytes is not explicitly mapped — should serialise as a debug string.
+        let v = value_to_graphson(&Value::Bytes(vec![1, 2, 3]));
+        assert!(v.is_string(), "expected fallback string, got {v:?}");
+        let s = v.as_str().unwrap();
+        // Debug formatting should mention the variant name.
+        assert!(s.contains("Bytes"), "fallback should embed Debug repr: {s}");
+    }
+
+    #[test]
+    fn query_result_single_column_unwraps() {
+        let mut row = std::collections::HashMap::new();
+        row.insert("count".to_string(), Value::Int(5));
+        let qr = QueryResult {
+            columns: vec!["count".to_string()],
+            rows: vec![row],
+            stats: cypher_core::executor::MutationStats::default(),
+            trailing_error: None,
+        };
+        let out = query_result_to_graphson(&qr);
+        assert_eq!(out.len(), 1);
+        // Single-column path returns bare typed value (not an object).
+        assert_eq!(out[0]["@type"], "g:Int64");
+        assert_eq!(out[0]["@value"], 5);
+    }
+
+    #[test]
+    fn query_result_multi_column_emits_objects() {
+        let mut row = std::collections::HashMap::new();
+        row.insert("a".to_string(), Value::Int(1));
+        row.insert("b".to_string(), Value::Str("x".into()));
+        let qr = QueryResult {
+            columns: vec!["a".to_string(), "b".to_string()],
+            rows: vec![row],
+            stats: cypher_core::executor::MutationStats::default(),
+            trailing_error: None,
+        };
+        let out = query_result_to_graphson(&qr);
+        assert_eq!(out.len(), 1);
+        let obj = out[0].as_object().unwrap();
+        assert_eq!(obj["a"]["@type"], "g:Int64");
+        assert_eq!(obj["b"], serde_json::Value::String("x".into()));
+    }
+
+    #[test]
+    fn query_result_missing_column_yields_null() {
+        // Single column requested but not present in row -> Null.
+        let row = std::collections::HashMap::new();
+        let qr = QueryResult {
+            columns: vec!["missing".to_string()],
+            rows: vec![row],
+            stats: cypher_core::executor::MutationStats::default(),
+            trailing_error: None,
+        };
+        let out = query_result_to_graphson(&qr);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_null());
+    }
+
+    #[test]
+    fn query_result_empty_rows() {
+        let qr = QueryResult {
+            columns: vec!["x".to_string()],
+            rows: vec![],
+            stats: cypher_core::executor::MutationStats::default(),
+            trailing_error: None,
+        };
+        assert!(query_result_to_graphson(&qr).is_empty());
+    }
 }

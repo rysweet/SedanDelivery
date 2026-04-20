@@ -133,3 +133,228 @@ async fn handle_bytecode(
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection::GremlinSession;
+    use cypher_core::storage::{GraphStore, InMemoryGraphStore};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
+
+    // Serialize tests that mutate GREMLIN_PASSWORD (process-global env).
+    // Use tokio::sync::Mutex so the guard can be held across .await points
+    // without tripping clippy's await_holding_lock lint.
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    fn session() -> GremlinSession {
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
+        GremlinSession::new(store)
+    }
+
+    fn req_json(op: &str, args: serde_json::Value) -> String {
+        serde_json::json!({
+            "requestId": Uuid::new_v4().to_string(),
+            "op": op,
+            "processor": "traversal",
+            "args": args,
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn malformed_json_returns_protocol_error() {
+        let mut s = session();
+        let err = handle_message("{not json}", &mut s).await.unwrap_err();
+        assert!(matches!(err, ProtocolError::MalformedRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn close_op_returns_no_content() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let mut s = session();
+        let resp = handle_message(&req_json("close", serde_json::json!({})), &mut s)
+            .await
+            .unwrap();
+        assert_eq!(resp.status.code, 204);
+    }
+
+    #[tokio::test]
+    async fn eval_op_is_unsupported_597() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let mut s = session();
+        let resp = handle_message(
+            &req_json("eval", serde_json::json!({"gremlin": "g.V()"})),
+            &mut s,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status.code, 597);
+        assert!(resp.status.message.to_lowercase().contains("text"));
+    }
+
+    #[tokio::test]
+    async fn unsupported_op_returns_500() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let mut s = session();
+        let resp = handle_message(&req_json("frobnicate", serde_json::json!({})), &mut s)
+            .await
+            .unwrap();
+        assert_eq!(resp.status.code, 500);
+        assert!(resp.status.message.contains("unsupported"));
+    }
+
+    #[tokio::test]
+    async fn auth_required_blocks_non_auth_ops() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::set_var("GREMLIN_PASSWORD", "secret");
+        let mut s = session();
+        let resp = handle_message(&req_json("close", serde_json::json!({})), &mut s)
+            .await
+            .unwrap();
+        assert_eq!(resp.status.code, 401);
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[tokio::test]
+    async fn authentication_succeeds_with_no_password_configured() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let mut s = session();
+        let resp = handle_message(&req_json("authentication", serde_json::json!({})), &mut s)
+            .await
+            .unwrap();
+        assert_eq!(resp.status.code, 200);
+        assert!(s.authenticated);
+    }
+
+    #[tokio::test]
+    async fn authentication_succeeds_with_correct_plain_password() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::set_var("GREMLIN_PASSWORD", "hunter2");
+        let mut s = session();
+        let resp = handle_message(
+            &req_json("authentication", serde_json::json!({"password": "hunter2"})),
+            &mut s,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status.code, 200);
+        assert!(s.authenticated);
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[tokio::test]
+    async fn authentication_fails_with_wrong_password() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::set_var("GREMLIN_PASSWORD", "hunter2");
+        let mut s = session();
+        let resp = handle_message(
+            &req_json("authentication", serde_json::json!({"password": "nope"})),
+            &mut s,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status.code, 401);
+        assert!(!s.authenticated);
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[tokio::test]
+    async fn authentication_succeeds_with_sasl_token() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::set_var("GREMLIN_PASSWORD", "p4ss");
+        let mut s = session();
+        // SASL PLAIN: \0authzid\0authcid\0password
+        let sasl = "\u{0}user\u{0}p4ss";
+        let resp = handle_message(
+            &req_json("authentication", serde_json::json!({"sasl": sasl})),
+            &mut s,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status.code, 200);
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[tokio::test]
+    async fn authentication_fails_with_empty_creds() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::set_var("GREMLIN_PASSWORD", "p4ss");
+        let mut s = session();
+        // No sasl, no password — empty submitted, must fail.
+        let resp = handle_message(&req_json("authentication", serde_json::json!({})), &mut s)
+            .await
+            .unwrap();
+        assert_eq!(resp.status.code, 401);
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[tokio::test]
+    async fn bytecode_missing_gremlin_arg_returns_500() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let mut s = session();
+        let resp = handle_message(&req_json("bytecode", serde_json::json!({})), &mut s)
+            .await
+            .unwrap();
+        assert_eq!(resp.status.code, 500);
+        assert!(resp.status.message.contains("missing 'gremlin'"));
+    }
+
+    #[tokio::test]
+    async fn bytecode_happy_path_returns_success() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let mut s = session();
+        let bc = serde_json::json!({
+            "@type": "g:Bytecode",
+            "@value": {"step": [["V"], ["count"]]}
+        });
+        let resp = handle_message(
+            &req_json("bytecode", serde_json::json!({"gremlin": bc})),
+            &mut s,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status.code, 200);
+        // Single column count → typed Int64 with 0.
+        let data = resp.result.data.as_array().unwrap();
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0]["@value"], 0);
+    }
+
+    #[tokio::test]
+    async fn bytecode_invalid_returns_500_execution_error() {
+        let _g = ENV_LOCK.lock().await;
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let mut s = session();
+        // Step array missing — execute_gremlin returns Err.
+        let bc = serde_json::json!({"@type": "g:Bytecode", "@value": {}});
+        let resp = handle_message(
+            &req_json("bytecode", serde_json::json!({"gremlin": bc})),
+            &mut s,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status.code, 500);
+    }
+
+    #[test]
+    fn extract_sasl_password_three_segments() {
+        assert_eq!(
+            extract_sasl_password("\u{0}user\u{0}pw"),
+            Some("pw".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_sasl_password_too_few_segments_is_none() {
+        assert_eq!(extract_sasl_password("user:pw"), None);
+        assert_eq!(extract_sasl_password("\u{0}only_one"), None);
+    }
+}

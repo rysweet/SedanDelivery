@@ -355,4 +355,176 @@ mod tests {
         let json = bc(serde_json::json!([]));
         assert!(bytecode_to_cypher(&json).is_err());
     }
+
+    #[test]
+    fn missing_step_array_errors() {
+        let json = serde_json::json!({"@type": "g:Bytecode", "@value": {}});
+        assert!(bytecode_to_cypher(&json).is_err());
+    }
+
+    #[test]
+    fn malformed_step_not_array_errors() {
+        let json = serde_json::json!({
+            "@type": "g:Bytecode",
+            "@value": { "step": ["not_an_array"] }
+        });
+        assert!(bytecode_to_cypher(&json).is_err());
+    }
+
+    #[test]
+    fn step_missing_name_errors() {
+        let json = bc(serde_json::json!([[]]));
+        assert!(bytecode_to_cypher(&json).is_err());
+    }
+
+    #[test]
+    fn e_traversal_starts_with_edge() {
+        let json = bc(serde_json::json!([["E"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("()-[e]->()"));
+        assert!(cypher.contains("RETURN e"));
+    }
+
+    #[test]
+    fn has_label_on_vertex() {
+        let json = bc(serde_json::json!([["V"], ["hasLabel", "Person"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("(n:`Person`)"));
+    }
+
+    #[test]
+    fn has_label_on_edge() {
+        let json = bc(serde_json::json!([["E"], ["hasLabel", "knows"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("()-[e:`knows`]->()"));
+    }
+
+    #[test]
+    fn has_three_arg_label_key_value() {
+        let json = bc(serde_json::json!([
+            ["V"],
+            ["has", "Person", "name", "marko"]
+        ]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("(n:`Person`)"));
+        assert!(cypher.contains("n.`name` = 'marko'"));
+    }
+
+    #[test]
+    fn in_traversal() {
+        let json = bc(serde_json::json!([["V"], ["in", "knows"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("(n)<-[:`knows`]-(n_in)"));
+    }
+
+    #[test]
+    fn both_traversal() {
+        let json = bc(serde_json::json!([["V"], ["both", "knows"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("(n)-[:`knows`]-(n_both)"));
+    }
+
+    #[test]
+    fn out_with_no_label() {
+        let json = bc(serde_json::json!([["V"], ["out"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        // Empty rel label produces []
+        assert!(cypher.contains("(n)-[]->(n_out)"));
+    }
+
+    #[test]
+    fn out_e_and_in_e_traversals() {
+        let cypher_oute =
+            bytecode_to_cypher(&bc(serde_json::json!([["V"], ["outE", "rel"]]))).unwrap();
+        assert!(cypher_oute.contains("(n)-[n_e:`rel`]->()"));
+
+        let cypher_ine = bytecode_to_cypher(&bc(serde_json::json!([["V"], ["inE"]]))).unwrap();
+        assert!(cypher_ine.contains("(n)<-[n_e]-()"));
+    }
+
+    #[test]
+    fn unsupported_step_is_ignored() {
+        // "wibble" is unknown — it should be silently dropped, not error.
+        let json = bc(serde_json::json!([["V"], ["wibble"], ["count"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("count(n)"));
+    }
+
+    #[test]
+    fn graphson_int64_typed_value_for_v_id_and_limit() {
+        let json = bc(serde_json::json!([
+            ["V", {"@type": "g:Int64", "@value": 42}],
+            ["limit", {"@type": "g:Int64", "@value": 5}]
+        ]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("id(n) = 42"));
+        assert!(cypher.contains("LIMIT 5"));
+    }
+
+    #[test]
+    fn has_with_typed_int_value() {
+        let json = bc(serde_json::json!([
+            ["V"],
+            ["has", "age", {"@type": "g:Int64", "@value": 29}]
+        ]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("n.`age` = 29"));
+    }
+
+    #[test]
+    fn has_with_float_and_bool() {
+        let cy_float =
+            bytecode_to_cypher(&bc(serde_json::json!([["V"], ["has", "score", 1.5]]))).unwrap();
+        assert!(cy_float.contains("n.`score` = 1.5"));
+
+        let cy_bool =
+            bytecode_to_cypher(&bc(serde_json::json!([["V"], ["has", "active", true]]))).unwrap();
+        assert!(cy_bool.contains("n.`active` = true"));
+    }
+
+    #[test]
+    fn escape_string_literal_handles_quotes_and_escapes() {
+        // Run through the public translation surface: a value containing
+        // single quotes, backslashes, newlines must be escaped.
+        let json = bc(serde_json::json!([
+            ["V"],
+            ["has", "note", "it's a \\ \n test"]
+        ]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains(r"\'"), "single quote not escaped: {cypher}");
+        assert!(cypher.contains(r"\\"), "backslash not escaped: {cypher}");
+        assert!(cypher.contains(r"\n"), "newline not escaped: {cypher}");
+    }
+
+    #[test]
+    fn escape_identifier_handles_backticks() {
+        // Label containing a backtick must be doubled.
+        let json = bc(serde_json::json!([["V"], ["hasLabel", "weird`label"]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(
+            cypher.contains("`weird``label`"),
+            "backtick not doubled: {cypher}"
+        );
+    }
+
+    #[test]
+    fn graphson_to_i64_on_plain_int_via_v() {
+        // Plain integer (not wrapped in @type/@value) must still parse.
+        let json = bc(serde_json::json!([["V", 99]]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("id(n) = 99"));
+    }
+
+    #[test]
+    fn has_two_arg_unrecognized_value_is_dropped() {
+        // An object value that doesn't unwrap to a literal should be skipped
+        // (no WHERE clause appended), still producing a valid query.
+        let json = bc(serde_json::json!([
+            ["V"],
+            ["has", "weird", {"unknown": "shape"}]
+        ]));
+        let cypher = bytecode_to_cypher(&json).unwrap();
+        assert!(cypher.contains("MATCH (n)"));
+        assert!(!cypher.contains("WHERE"));
+    }
 }

@@ -32,7 +32,7 @@ pub struct GremlinSession {
 }
 
 impl GremlinSession {
-    fn new(store: Arc<dyn GraphStore>) -> Self {
+    pub(crate) fn new(store: Arc<dyn GraphStore>) -> Self {
         Self {
             store,
             graph: "default".to_string(),
@@ -122,4 +122,71 @@ pub async fn handle_connection(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cypher_core::storage::InMemoryGraphStore;
+    use std::sync::Mutex;
+
+    // Serialize env-var mutation; tests in this module touch GREMLIN_PASSWORD.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn session_defaults_are_unauthenticated_default_graph() {
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
+        let s = GremlinSession::new(store);
+        assert_eq!(s.graph, "default");
+        assert!(!s.authenticated);
+    }
+
+    #[test]
+    fn requires_auth_false_when_no_password_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("GREMLIN_PASSWORD");
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
+        let s = GremlinSession::new(store);
+        assert!(!s.requires_auth());
+    }
+
+    #[test]
+    fn requires_auth_true_when_password_set_and_not_authenticated() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("GREMLIN_PASSWORD", "secret");
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
+        let s = GremlinSession::new(store);
+        assert!(s.requires_auth());
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[test]
+    fn requires_auth_false_when_authenticated() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("GREMLIN_PASSWORD", "secret");
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
+        let mut s = GremlinSession::new(store);
+        s.authenticated = true;
+        assert!(!s.requires_auth());
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[test]
+    fn requires_auth_false_when_password_empty() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("GREMLIN_PASSWORD", "");
+        let store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
+        let s = GremlinSession::new(store);
+        assert!(!s.requires_auth());
+        std::env::remove_var("GREMLIN_PASSWORD");
+    }
+
+    #[test]
+    fn connection_error_displays() {
+        let pe = protocol::ProtocolError::MalformedRequest("bad".into());
+        let err: ConnectionError = pe.into();
+        let s = format!("{err}");
+        assert!(s.contains("protocol error"));
+        assert!(s.contains("bad"));
+    }
 }
