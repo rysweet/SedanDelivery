@@ -3,6 +3,7 @@
 use cypher_core::error::StorageError;
 use cypher_core::serde_value::json_to_props;
 use cypher_core::storage::{EdgeId, NodeId, RangeQuery};
+use redis::ConnectionLike;
 
 use crate::keys::{key_label, key_node, key_propidx, key_reltype, value_to_index_key, IDX_SEP};
 use crate::RedisGraphStore;
@@ -16,8 +17,17 @@ impl RedisGraphStore {
         label: &str,
     ) -> Result<Vec<NodeId>, StorageError> {
         let mut conn = self.route_read_for_graph(graph)?;
+        self.find_nodes_by_label_on(conn.as_mut(), graph, label)
+    }
+
+    pub(crate) fn find_nodes_by_label_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+        label: &str,
+    ) -> Result<Vec<NodeId>, StorageError> {
         let members = smembers_or_scan(
-            conn.as_mut(),
+            conn,
             &self.kp(key_label(graph, label)),
             smembers_threshold(),
         )?;
@@ -28,6 +38,29 @@ impl RedisGraphStore {
                     .map(NodeId)
                     .map_err(|_| StorageError::Serialization {
                         msg: format!("bad node id in label index: {s}"),
+                    })
+            })
+            .collect()
+    }
+
+    pub(crate) fn find_edges_by_type_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+        rel_type: &str,
+    ) -> Result<Vec<EdgeId>, StorageError> {
+        let members = smembers_or_scan(
+            conn,
+            &self.kp(key_reltype(graph, rel_type)),
+            smembers_threshold(),
+        )?;
+        members
+            .into_iter()
+            .map(|s| {
+                s.parse::<u64>()
+                    .map(EdgeId)
+                    .map_err(|_| StorageError::Serialization {
+                        msg: format!("bad edge id in reltype index: {s}"),
                     })
             })
             .collect()
@@ -132,20 +165,152 @@ impl RedisGraphStore {
         rel_type: &str,
     ) -> Result<Vec<EdgeId>, StorageError> {
         let mut conn = self.route_read_for_graph(graph)?;
-        let members = smembers_or_scan(
-            conn.as_mut(),
-            &self.kp(key_reltype(graph, rel_type)),
-            smembers_threshold(),
-        )?;
-        members
-            .into_iter()
-            .map(|s| {
-                s.parse::<u64>()
-                    .map(EdgeId)
-                    .map_err(|_| StorageError::Serialization {
-                        msg: format!("bad edge id in reltype index: {s}"),
-                    })
-            })
-            .collect()
+        self.find_edges_by_type_on(conn.as_mut(), graph, rel_type)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redis::{Arg, Cmd, RedisError, RedisResult, Value as RedisValue};
+    use std::collections::VecDeque;
+
+    #[derive(Default)]
+    struct ScriptedConn {
+        responses: VecDeque<(String, RedisResult<RedisValue>)>,
+    }
+    impl ScriptedConn {
+        fn push(mut self, name: &str, v: RedisResult<RedisValue>) -> Self {
+            self.responses.push_back((name.into(), v));
+            self
+        }
+        fn ok_smembers(self, items: &[&str]) -> Self {
+            self.push(
+                "SMEMBERS",
+                Ok(RedisValue::Array(
+                    items
+                        .iter()
+                        .map(|s| RedisValue::BulkString(s.as_bytes().to_vec()))
+                        .collect(),
+                )),
+            )
+        }
+        fn ok_scard(self, n: i64) -> Self {
+            self.push("SCARD", Ok(RedisValue::Int(n)))
+        }
+        fn err(self, name: &str) -> Self {
+            self.push(
+                name,
+                Err(RedisError::from((redis::ErrorKind::Io, "scripted"))),
+            )
+        }
+    }
+    impl ConnectionLike for ScriptedConn {
+        fn req_packed_command(&mut self, _c: &[u8]) -> RedisResult<RedisValue> {
+            panic!("packed not expected");
+        }
+        fn req_packed_commands(
+            &mut self,
+            _c: &[u8],
+            _o: usize,
+            _n: usize,
+        ) -> RedisResult<Vec<RedisValue>> {
+            panic!("packed not expected");
+        }
+        fn req_command(&mut self, cmd: &Cmd) -> RedisResult<RedisValue> {
+            let name = cmd
+                .args_iter()
+                .next()
+                .map(|a| match a {
+                    Arg::Simple(b) => String::from_utf8_lossy(b).to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let (expected, response) = self
+                .responses
+                .pop_front()
+                .unwrap_or_else(|| panic!("no scripted response for {name}"));
+            assert_eq!(name, expected, "got {name}, want {expected}");
+            response
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+        fn check_connection(&mut self) -> bool {
+            true
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    fn store() -> RedisGraphStore {
+        RedisGraphStore::new_for_testing()
+    }
+
+    #[test]
+    fn find_nodes_by_label_on_returns_parsed_node_ids() {
+        let s = store();
+        let mut conn = ScriptedConn::default().ok_scard(2).ok_smembers(&["1", "2"]);
+        let ids = s.find_nodes_by_label_on(&mut conn, "g", "Person").unwrap();
+        assert_eq!(ids, vec![NodeId(1), NodeId(2)]);
+    }
+
+    #[test]
+    fn find_nodes_by_label_on_returns_empty_when_set_empty() {
+        let s = store();
+        let mut conn = ScriptedConn::default().ok_scard(0).ok_smembers(&[]);
+        let ids = s.find_nodes_by_label_on(&mut conn, "g", "Person").unwrap();
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn find_nodes_by_label_on_rejects_non_numeric_member_with_serialization_error() {
+        let s = store();
+        let mut conn = ScriptedConn::default().ok_scard(1).ok_smembers(&["bogus"]);
+        let err = s
+            .find_nodes_by_label_on(&mut conn, "g", "Person")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Serialization { .. }));
+    }
+
+    #[test]
+    fn find_nodes_by_label_on_propagates_backend_error() {
+        let s = store();
+        let mut conn = ScriptedConn::default().err("SCARD");
+        let err = s
+            .find_nodes_by_label_on(&mut conn, "g", "Person")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
+    }
+
+    #[test]
+    fn find_edges_by_type_on_returns_parsed_edge_ids() {
+        let s = store();
+        let mut conn = ScriptedConn::default()
+            .ok_scard(3)
+            .ok_smembers(&["10", "11", "12"]);
+        let ids = s.find_edges_by_type_on(&mut conn, "g", "KNOWS").unwrap();
+        assert_eq!(ids, vec![EdgeId(10), EdgeId(11), EdgeId(12)]);
+    }
+
+    #[test]
+    fn find_edges_by_type_on_rejects_non_numeric_member_with_serialization_error() {
+        let s = store();
+        let mut conn = ScriptedConn::default().ok_scard(1).ok_smembers(&["nope"]);
+        let err = s
+            .find_edges_by_type_on(&mut conn, "g", "KNOWS")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Serialization { .. }));
+    }
+
+    #[test]
+    fn find_edges_by_type_on_propagates_backend_error() {
+        let s = store();
+        let mut conn = ScriptedConn::default().err("SCARD");
+        let err = s
+            .find_edges_by_type_on(&mut conn, "g", "KNOWS")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
     }
 }

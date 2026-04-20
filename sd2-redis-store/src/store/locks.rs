@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use cypher_core::error::StorageError;
 
-use crate::connection::RedisConn;
 use crate::error_metrics::{
     record_write_lock_backend_failure, REDIS_WRITE_LOCK_ACQUIRE_ATTEMPTS_TOTAL,
     REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL, REDIS_WRITE_LOCK_ACQUIRE_SUCCESSES_TOTAL,
@@ -20,21 +19,21 @@ use super::RedisGraphStore;
 impl RedisGraphStore {
     fn try_acquire_write_locks(
         &self,
-        conn: &mut RedisConn,
+        conn: &mut dyn redis::ConnectionLike,
         graph: &str,
         lock_keys: &[String],
         ttl_ms: u64,
     ) -> Result<Option<Vec<(String, String)>>, StorageError> {
         let mut held = Vec::with_capacity(lock_keys.len());
         for lock_key in lock_keys {
-            match lock::acquire(conn.as_mut(), lock_key, ttl_ms) {
+            match lock::acquire(conn, lock_key, ttl_ms) {
                 Ok(Some(token)) => held.push((lock_key.clone(), token)),
                 Ok(None) => {
                     let mut cleanup = Ok(());
                     while let Some((held_key, held_token)) = held.pop() {
                         cleanup = map_lock_release_result(
                             graph,
-                            lock::release(conn.as_mut(), &held_key, &held_token),
+                            lock::release(conn, &held_key, &held_token),
                             cleanup,
                         );
                     }
@@ -46,7 +45,7 @@ impl RedisGraphStore {
                     while let Some((held_key, held_token)) = held.pop() {
                         cleanup = map_lock_release_result(
                             graph,
-                            lock::release(conn.as_mut(), &held_key, &held_token),
+                            lock::release(conn, &held_key, &held_token),
                             cleanup,
                         );
                     }
@@ -99,7 +98,7 @@ impl RedisGraphStore {
                     return Err(err);
                 }
             };
-            match self.try_acquire_write_locks(&mut conn, graph, &lock_keys, ttl_ms) {
+            match self.try_acquire_write_locks(conn.as_mut(), graph, &lock_keys, ttl_ms) {
                 Ok(Some(locks)) => {
                     if saw_contention {
                         metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL).increment(1);

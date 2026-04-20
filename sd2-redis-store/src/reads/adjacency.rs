@@ -2,6 +2,7 @@
 
 use cypher_core::error::StorageError;
 use cypher_core::storage::{AdjEntry, EdgeId, NodeId};
+use redis::ConnectionLike;
 
 use crate::keys::{key_in, key_out};
 use crate::RedisGraphStore;
@@ -15,12 +16,7 @@ impl RedisGraphStore {
         node_id: NodeId,
     ) -> Result<Vec<AdjEntry>, StorageError> {
         let mut conn = self.route_read_for_graph(graph)?;
-        let members = smembers_or_scan(
-            conn.as_mut(),
-            &self.kp(key_out(graph, node_id.0)),
-            smembers_threshold(),
-        )?;
-        Ok(Self::parse_adj_members(members))
+        self.out_edges_on(conn.as_mut(), graph, node_id)
     }
 
     pub(crate) fn in_edges_impl(
@@ -29,8 +25,31 @@ impl RedisGraphStore {
         node_id: NodeId,
     ) -> Result<Vec<AdjEntry>, StorageError> {
         let mut conn = self.route_read_for_graph(graph)?;
+        self.in_edges_on(conn.as_mut(), graph, node_id)
+    }
+
+    pub(crate) fn out_edges_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+        node_id: NodeId,
+    ) -> Result<Vec<AdjEntry>, StorageError> {
         let members = smembers_or_scan(
-            conn.as_mut(),
+            conn,
+            &self.kp(key_out(graph, node_id.0)),
+            smembers_threshold(),
+        )?;
+        Ok(Self::parse_adj_members(members))
+    }
+
+    pub(crate) fn in_edges_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+        node_id: NodeId,
+    ) -> Result<Vec<AdjEntry>, StorageError> {
+        let members = smembers_or_scan(
+            conn,
             &self.kp(key_in(graph, node_id.0)),
             smembers_threshold(),
         )?;
@@ -44,6 +63,42 @@ impl RedisGraphStore {
         rel_types: &[&str],
     ) -> Result<Vec<AdjEntry>, StorageError> {
         let all = self.out_edges_impl(graph, node_id)?;
+        if rel_types.is_empty() {
+            return Ok(all);
+        }
+        Ok(all
+            .into_iter()
+            .filter(|e| rel_types.contains(&e.rel_type.as_str()))
+            .collect())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn out_edges_by_type_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+        node_id: NodeId,
+        rel_types: &[&str],
+    ) -> Result<Vec<AdjEntry>, StorageError> {
+        let all = self.out_edges_on(conn, graph, node_id)?;
+        if rel_types.is_empty() {
+            return Ok(all);
+        }
+        Ok(all
+            .into_iter()
+            .filter(|e| rel_types.contains(&e.rel_type.as_str()))
+            .collect())
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn in_edges_by_type_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+        node_id: NodeId,
+        rel_types: &[&str],
+    ) -> Result<Vec<AdjEntry>, StorageError> {
+        let all = self.in_edges_on(conn, graph, node_id)?;
         if rel_types.is_empty() {
             return Ok(all);
         }
@@ -179,5 +234,177 @@ impl RedisGraphStore {
             .into_iter()
             .map(|e| e.edge_id)
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redis::{Arg, Cmd, RedisError, RedisResult, Value as RedisValue};
+    use std::collections::VecDeque;
+
+    #[derive(Default)]
+    struct ScriptedConn {
+        responses: VecDeque<(String, RedisResult<RedisValue>)>,
+    }
+    impl ScriptedConn {
+        fn push(mut self, name: &str, v: RedisResult<RedisValue>) -> Self {
+            self.responses.push_back((name.into(), v));
+            self
+        }
+        fn ok_smembers(self, items: &[&str]) -> Self {
+            self.push(
+                "SMEMBERS",
+                Ok(RedisValue::Array(
+                    items
+                        .iter()
+                        .map(|s| RedisValue::BulkString(s.as_bytes().to_vec()))
+                        .collect(),
+                )),
+            )
+        }
+        fn ok_scard(self, n: i64) -> Self {
+            self.push("SCARD", Ok(RedisValue::Int(n)))
+        }
+        fn err(self, name: &str) -> Self {
+            self.push(
+                name,
+                Err(RedisError::from((redis::ErrorKind::Io, "scripted"))),
+            )
+        }
+    }
+    impl ConnectionLike for ScriptedConn {
+        fn req_packed_command(&mut self, _c: &[u8]) -> RedisResult<RedisValue> {
+            panic!("packed not expected");
+        }
+        fn req_packed_commands(
+            &mut self,
+            _c: &[u8],
+            _o: usize,
+            _n: usize,
+        ) -> RedisResult<Vec<RedisValue>> {
+            panic!("packed not expected");
+        }
+        fn req_command(&mut self, cmd: &Cmd) -> RedisResult<RedisValue> {
+            let name = cmd
+                .args_iter()
+                .next()
+                .map(|a| match a {
+                    Arg::Simple(b) => String::from_utf8_lossy(b).to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let (expected, response) = self
+                .responses
+                .pop_front()
+                .unwrap_or_else(|| panic!("no scripted response for {name}"));
+            assert_eq!(name, expected, "got {name}, want {expected}");
+            response
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+        fn check_connection(&mut self) -> bool {
+            true
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    fn store() -> RedisGraphStore {
+        RedisGraphStore::new_for_testing()
+    }
+
+    fn encoded(edge_id: u64, neighbor: u64, rt: &str) -> String {
+        format!("{edge_id}:{neighbor}:{rt}")
+    }
+
+    #[test]
+    fn out_edges_on_returns_parsed_entries() {
+        let s = store();
+        let mut conn = ScriptedConn::default()
+            .ok_scard(2)
+            .ok_smembers(&[&encoded(1, 7, "KNOWS"), &encoded(2, 8, "LIKES")]);
+        let edges = s.out_edges_on(&mut conn, "g", NodeId(1)).unwrap();
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[0].rel_type, "KNOWS");
+        assert_eq!(edges[0].edge_id, EdgeId(1));
+        assert_eq!(edges[0].neighbor_id, NodeId(7));
+    }
+
+    #[test]
+    fn out_edges_on_returns_empty_for_isolated_node() {
+        let s = store();
+        let mut conn = ScriptedConn::default().ok_scard(0).ok_smembers(&[]);
+        let edges = s.out_edges_on(&mut conn, "g", NodeId(1)).unwrap();
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn out_edges_on_propagates_backend_error() {
+        let s = store();
+        let mut conn = ScriptedConn::default().err("SCARD");
+        let err = s.out_edges_on(&mut conn, "g", NodeId(1)).unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
+    }
+
+    #[test]
+    fn in_edges_on_returns_parsed_entries() {
+        let s = store();
+        let mut conn = ScriptedConn::default()
+            .ok_scard(1)
+            .ok_smembers(&[&encoded(9, 5, "KNOWS")]);
+        let edges = s.in_edges_on(&mut conn, "g", NodeId(1)).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].neighbor_id, NodeId(5));
+        assert_eq!(edges[0].edge_id, EdgeId(9));
+    }
+
+    #[test]
+    fn in_edges_on_propagates_backend_error() {
+        let s = store();
+        let mut conn = ScriptedConn::default().err("SCARD");
+        let err = s.in_edges_on(&mut conn, "g", NodeId(1)).unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
+    }
+
+    #[test]
+    fn out_edges_by_type_on_returns_all_when_filter_empty() {
+        let s = store();
+        let mut conn = ScriptedConn::default()
+            .ok_scard(2)
+            .ok_smembers(&[&encoded(1, 2, "A"), &encoded(2, 3, "B")]);
+        let edges = s
+            .out_edges_by_type_on(&mut conn, "g", NodeId(1), &[])
+            .unwrap();
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn out_edges_by_type_on_filters_by_type() {
+        let s = store();
+        let mut conn = ScriptedConn::default().ok_scard(3).ok_smembers(&[
+            &encoded(1, 2, "KNOWS"),
+            &encoded(2, 3, "LIKES"),
+            &encoded(3, 4, "KNOWS"),
+        ]);
+        let edges = s
+            .out_edges_by_type_on(&mut conn, "g", NodeId(1), &["KNOWS"])
+            .unwrap();
+        assert_eq!(edges.len(), 2);
+        assert!(edges.iter().all(|e| e.rel_type == "KNOWS"));
+    }
+
+    #[test]
+    fn out_edges_by_type_on_returns_empty_when_no_type_matches() {
+        let s = store();
+        let mut conn = ScriptedConn::default()
+            .ok_scard(1)
+            .ok_smembers(&[&encoded(1, 2, "KNOWS")]);
+        let edges = s
+            .out_edges_by_type_on(&mut conn, "g", NodeId(1), &["MISSING"])
+            .unwrap();
+        assert!(edges.is_empty());
     }
 }

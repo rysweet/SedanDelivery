@@ -7,6 +7,7 @@
 
 use cypher_core::error::StorageError;
 use cypher_core::storage::validate_graph_name;
+use redis::ConnectionLike;
 
 use crate::keys::{key_label_names, key_propidx_manifest, key_reltype_names};
 use crate::lock::WRITE_LOCK_TTL_MS;
@@ -30,6 +31,46 @@ pub struct GraphMetadataAuditReport {
 }
 
 impl RedisGraphStore {
+    /// Run the read-only audit pass on a connection-like and return the
+    /// candidate report alongside the live `deleting` flag (so a follow-up
+    /// repair pass can re-check under a write lock).
+    ///
+    /// Returns `None` (with no work performed) if the graph is neither
+    /// registered nor in the deleting state — caller should map that to
+    /// `GraphNotFound`.
+    pub(crate) fn audit_graph_metadata_read_pass_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+        repair: bool,
+    ) -> Result<Option<GraphMetadataAuditReport>, StorageError> {
+        let (registered, deleting) = self.graph_registry_state_on(conn, graph)?;
+        if !registered && !deleting {
+            return Ok(None);
+        }
+
+        let label_members = self.read_set_members(conn, &self.kp(key_label_names(graph)))?;
+        let reltype_members = self.read_set_members(conn, &self.kp(key_reltype_names(graph)))?;
+        let propidx_members = self.read_set_members(conn, &self.kp(key_propidx_manifest(graph)))?;
+
+        let mut stale_labels = self.collect_stale_labels_on(conn, graph, &label_members)?;
+        let mut stale_reltypes = self.collect_stale_reltypes_on(conn, graph, &reltype_members)?;
+        let mut stale_propidx = self.collect_stale_propidx_on(conn, graph, &propidx_members)?;
+        stale_labels.sort();
+        stale_reltypes.sort();
+        stale_propidx.sort();
+        let deleting_orphaned = deleting && self.graph_cleanup_roots_absent_on(conn, graph)?;
+
+        Ok(Some(GraphMetadataAuditReport {
+            graph: graph.to_string(),
+            repair,
+            stale_labels,
+            stale_reltypes,
+            stale_propidx,
+            deleting_orphaned,
+        }))
+    }
+
     /// Audit Redis-only graph metadata and optionally prune provably stale state.
     ///
     /// This intentionally stays graph-scoped and conservative:
@@ -46,50 +87,25 @@ impl RedisGraphStore {
         validate_graph_name(graph)?;
 
         let mut conn = self.conn()?;
-        let (registered, deleting) = self.graph_registry_state_on(conn.as_mut(), graph)?;
-        if !registered && !deleting {
-            return Err(StorageError::GraphNotFound {
+        let report = self
+            .audit_graph_metadata_read_pass_on(conn.as_mut(), graph, repair)?
+            .ok_or_else(|| StorageError::GraphNotFound {
                 name: graph.to_string(),
-            });
-        }
-
-        let label_members =
-            self.read_set_members(conn.as_mut(), &self.kp(key_label_names(graph)))?;
-        let reltype_members =
-            self.read_set_members(conn.as_mut(), &self.kp(key_reltype_names(graph)))?;
-        let propidx_members =
-            self.read_set_members(conn.as_mut(), &self.kp(key_propidx_manifest(graph)))?;
-
-        let mut stale_labels =
-            self.collect_stale_labels_on(conn.as_mut(), graph, &label_members)?;
-        let mut stale_reltypes =
-            self.collect_stale_reltypes_on(conn.as_mut(), graph, &reltype_members)?;
-        let mut stale_propidx =
-            self.collect_stale_propidx_on(conn.as_mut(), graph, &propidx_members)?;
-        stale_labels.sort();
-        stale_reltypes.sort();
-        stale_propidx.sort();
-        let deleting_orphaned =
-            deleting && self.graph_cleanup_roots_absent_on(conn.as_mut(), graph)?;
+            })?;
 
         drop(conn);
 
         if !repair
-            || (stale_labels.is_empty() && stale_reltypes.is_empty() && stale_propidx.is_empty())
+            || (report.stale_labels.is_empty()
+                && report.stale_reltypes.is_empty()
+                && report.stale_propidx.is_empty())
         {
-            return Ok(GraphMetadataAuditReport {
-                graph: graph.to_string(),
-                repair,
-                stale_labels,
-                stale_reltypes,
-                stale_propidx,
-                deleting_orphaned,
-            });
+            return Ok(report);
         }
 
-        let candidate_labels = stale_labels;
-        let candidate_reltypes = stale_reltypes;
-        let candidate_propidx = stale_propidx;
+        let candidate_labels = report.stale_labels;
+        let candidate_reltypes = report.stale_reltypes;
+        let candidate_propidx = report.stale_propidx;
 
         self.with_graph_write_lock(graph, WRITE_LOCK_TTL_MS * 2, 3, 50, |conn| {
             let (registered, deleting) = self.graph_registry_state_on(conn.as_mut(), graph)?;

@@ -175,3 +175,188 @@ fn audit_graph_metadata_with_repair_propagates_backend_error_for_valid_name() {
         "expected Backend (repair=true), got {r:?}"
     );
 }
+
+// ── Mock-backed read-pass tests for `audit_graph_metadata_read_pass_on` ──
+
+mod read_pass {
+    use super::super::GraphMetadataAuditReport;
+    use crate::RedisGraphStore;
+    use cypher_core::error::StorageError;
+    use redis::{Arg, Cmd, ConnectionLike, RedisError, RedisResult, Value as RedisValue};
+    use std::collections::VecDeque;
+
+    #[derive(Default)]
+    struct ScriptedConn {
+        responses: VecDeque<(String, RedisResult<RedisValue>)>,
+    }
+    impl ScriptedConn {
+        fn push(mut self, name: &str, v: RedisResult<RedisValue>) -> Self {
+            self.responses.push_back((name.into(), v));
+            self
+        }
+        fn ok_sismember(self, b: bool) -> Self {
+            self.push("SISMEMBER", Ok(RedisValue::Int(if b { 1 } else { 0 })))
+        }
+        fn ok_exists(self, n: i64) -> Self {
+            self.push("EXISTS", Ok(RedisValue::Int(n)))
+        }
+        fn ok_smembers(self, items: &[&str]) -> Self {
+            self.push(
+                "SMEMBERS",
+                Ok(RedisValue::Array(
+                    items
+                        .iter()
+                        .map(|s| RedisValue::BulkString(s.as_bytes().to_vec()))
+                        .collect(),
+                )),
+            )
+        }
+        fn ok_scard(self, n: i64) -> Self {
+            self.push("SCARD", Ok(RedisValue::Int(n)))
+        }
+        fn err(self, name: &str) -> Self {
+            self.push(
+                name,
+                Err(RedisError::from((redis::ErrorKind::Io, "scripted"))),
+            )
+        }
+    }
+    impl ConnectionLike for ScriptedConn {
+        fn req_packed_command(&mut self, _c: &[u8]) -> RedisResult<RedisValue> {
+            panic!("not expected");
+        }
+        fn req_packed_commands(
+            &mut self,
+            _c: &[u8],
+            _o: usize,
+            _n: usize,
+        ) -> RedisResult<Vec<RedisValue>> {
+            panic!("not expected");
+        }
+        fn req_command(&mut self, cmd: &Cmd) -> RedisResult<RedisValue> {
+            let name = cmd
+                .args_iter()
+                .next()
+                .map(|a| match a {
+                    Arg::Simple(b) => String::from_utf8_lossy(b).to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let (expected, response) = self
+                .responses
+                .pop_front()
+                .unwrap_or_else(|| panic!("no scripted response for {name}"));
+            assert_eq!(name, expected, "got {name}, want {expected}");
+            response
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+        fn check_connection(&mut self) -> bool {
+            true
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    fn store() -> RedisGraphStore {
+        RedisGraphStore::new_for_testing()
+    }
+
+    #[test]
+    fn read_pass_returns_none_when_graph_neither_registered_nor_deleting() {
+        let s = store();
+        // SISMEMBER -> false, EXISTS deleting marker -> 0
+        let mut conn = ScriptedConn::default().ok_sismember(false).ok_exists(0);
+        let result = s
+            .audit_graph_metadata_read_pass_on(&mut conn, "g", false)
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_pass_returns_clean_report_when_no_stale_metadata() {
+        let s = store();
+        let mut conn = ScriptedConn::default()
+            .ok_sismember(true) // registered
+            .ok_exists(0) // not deleting
+            .ok_smembers(&[]) // labels
+            .ok_smembers(&[]) // reltypes
+            .ok_smembers(&[]); // propidx
+        let report = s
+            .audit_graph_metadata_read_pass_on(&mut conn, "g", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.graph, "g");
+        assert!(report.stale_labels.is_empty());
+        assert!(report.stale_reltypes.is_empty());
+        assert!(report.stale_propidx.is_empty());
+        assert!(!report.deleting_orphaned);
+    }
+
+    #[test]
+    fn read_pass_detects_stale_label_with_empty_backing_set() {
+        let s = store();
+        let mut conn = ScriptedConn::default()
+            .ok_sismember(true)
+            .ok_exists(0)
+            .ok_smembers(&["Ghost", "Person"])
+            .ok_smembers(&[]) // reltypes
+            .ok_smembers(&[]) // propidx
+            .ok_scard(0) // Ghost stale
+            .ok_scard(5); // Person live
+        let report = s
+            .audit_graph_metadata_read_pass_on(&mut conn, "g", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.stale_labels, vec!["Ghost".to_string()]);
+        assert!(report.repair);
+    }
+
+    #[test]
+    fn read_pass_propagates_sismember_error() {
+        let s = store();
+        let mut conn = ScriptedConn::default().err("SISMEMBER");
+        let err = s
+            .audit_graph_metadata_read_pass_on(&mut conn, "g", false)
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
+    }
+
+    #[test]
+    fn read_pass_marks_deleting_orphaned_when_cleanup_roots_absent() {
+        let s = store();
+        // SISMEMBER -> false, EXISTS deleting marker -> 1 (deleting)
+        // 3 SMEMBERS for label/reltype/propidx members (all empty)
+        // graph_cleanup_roots_absent_on issues EXISTS calls; with 0 it's absent
+        let mut conn = ScriptedConn::default()
+            .ok_sismember(false)
+            .ok_exists(1)
+            .ok_smembers(&[])
+            .ok_smembers(&[])
+            .ok_smembers(&[])
+            .ok_exists(0)
+            .ok_exists(0)
+            .ok_exists(0)
+            .ok_exists(0)
+            .ok_exists(0)
+            .ok_exists(0)
+            .ok_exists(0)
+            .ok_exists(0);
+        let report = s
+            .audit_graph_metadata_read_pass_on(&mut conn, "g", false)
+            .unwrap()
+            .unwrap();
+        // Build a fully-clean expected report (deleting_orphaned should be true)
+        let _ = GraphMetadataAuditReport {
+            graph: "g".into(),
+            repair: false,
+            stale_labels: vec![],
+            stale_reltypes: vec![],
+            stale_propidx: vec![],
+            deleting_orphaned: true,
+        };
+        assert!(report.deleting_orphaned);
+    }
+}

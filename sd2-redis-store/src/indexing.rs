@@ -144,9 +144,19 @@ impl RedisGraphStore {
     ) -> Result<Vec<IndexDescriptor>, StorageError> {
         let mut conn = self.conn()?;
         self.require_graph_on(conn.as_mut(), graph)?;
+        self.list_indexes_on(conn.as_mut(), graph)
+    }
+
+    /// Read the registered index set for a graph and decode each member into
+    /// an `IndexDescriptor`. Members that do not contain `IDX_SEP` are skipped.
+    pub(crate) fn list_indexes_on(
+        &self,
+        conn: &mut dyn ConnectionLike,
+        graph: &str,
+    ) -> Result<Vec<IndexDescriptor>, StorageError> {
         let members: Vec<String> = redis::cmd("SMEMBERS")
             .arg(self.kp(key_indexes(graph)))
-            .query(conn.as_mut())
+            .query(conn)
             .map_err(crate::backend_storage_error)?;
         let mut result = Vec::new();
         for m in members {
@@ -414,5 +424,44 @@ mod active_indexes_tests {
         assert!(super::index_batch_size() >= 1);
         // Cached on second call.
         assert_eq!(super::index_batch_size(), super::index_batch_size());
+    }
+
+    #[test]
+    fn list_indexes_on_decodes_members_into_descriptors() {
+        let s = store();
+        let mut conn = ScriptedSmembersConn::ok(&["Person\x00name", "Movie\x00title"]);
+        let mut descs = s.list_indexes_on(&mut conn, "g").unwrap();
+        descs.sort_by(|a, b| a.label.cmp(&b.label));
+        assert_eq!(descs.len(), 2);
+        assert_eq!(descs[0].label, "Movie");
+        assert_eq!(descs[0].property, "title");
+        assert_eq!(descs[1].label, "Person");
+        assert_eq!(descs[1].property, "name");
+    }
+
+    #[test]
+    fn list_indexes_on_skips_members_missing_separator() {
+        let s = store();
+        let mut conn = ScriptedSmembersConn::ok(&["malformed-no-sep", "Good\x00prop"]);
+        let descs = s.list_indexes_on(&mut conn, "g").unwrap();
+        assert_eq!(descs.len(), 1);
+        assert_eq!(descs[0].label, "Good");
+        assert_eq!(descs[0].property, "prop");
+    }
+
+    #[test]
+    fn list_indexes_on_returns_empty_for_unindexed_graph() {
+        let s = store();
+        let mut conn = ScriptedSmembersConn::ok(&[]);
+        let descs = s.list_indexes_on(&mut conn, "g").unwrap();
+        assert!(descs.is_empty());
+    }
+
+    #[test]
+    fn list_indexes_on_propagates_smembers_error() {
+        let s = store();
+        let mut conn = ScriptedSmembersConn::err();
+        let err = s.list_indexes_on(&mut conn, "g").unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
     }
 }
