@@ -1,0 +1,21 @@
+[package]
+name        = "embedded-fuzz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Property-test / fuzz harness for the SedanDelivery embedded engines"
+publish     = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cypher-core           = { path = "../../cypher-core" }
+sedan-cypher-embedded = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded    = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+proptest              = { workspace = true }
+indexmap              = { workspace = true }
+
+[dev-dependencies]
+proptest              = { workspace = true }

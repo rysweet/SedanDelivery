@@ -1194,6 +1194,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-fuzz"
+version = "0.1.0"
+dependencies = [
+ "cypher-core",
+ "indexmap",
+ "proptest",
+ "sedan-cypher-embedded",
+ "sedan-gql-embedded",
+ "sedan-gremlin-embedded",
+]
+
+[[package]]
 name = "embedded_quickstart"
 version = "0.1.0"
 dependencies = [
