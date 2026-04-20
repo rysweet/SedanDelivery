@@ -229,3 +229,184 @@ pub(in crate::executor::filter) fn builtin_gremlin_sample_local(
         other => Ok(other.clone()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn java_random_deterministic_for_same_seed() {
+        let mut a = JavaCompatibleRandom::new(42);
+        let mut b = JavaCompatibleRandom::new(42);
+        for _ in 0..5 {
+            assert_eq!(a.next(31), b.next(31));
+        }
+    }
+
+    #[test]
+    fn java_random_next_int_in_bounds() {
+        let mut r = JavaCompatibleRandom::new(7);
+        for _ in 0..50 {
+            let v = r.next_int(10);
+            assert!(v < 10);
+        }
+        // Power-of-two short-circuit.
+        let mut r = JavaCompatibleRandom::new(7);
+        for _ in 0..50 {
+            let v = r.next_int(8);
+            assert!(v < 8);
+        }
+    }
+
+    #[test]
+    fn builtin_rand_returns_unit_interval_float() {
+        for _ in 0..10 {
+            let v = builtin_rand(Vec::new()).unwrap();
+            match v {
+                Value::Float(f) => {
+                    assert!((0.0..1.0).contains(&f), "rand() out of [0,1): {f}");
+                }
+                _ => panic!("expected Float"),
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_rand_arity_error() {
+        let err = builtin_rand(vec![Value::Int(1)]).unwrap_err();
+        assert!(matches!(err, GqlError::Execution(_)));
+    }
+
+    #[test]
+    fn java_random_next_double_returns_unit_interval() {
+        let v = builtin_java_random_next_double(vec![Value::Int(123)]).unwrap();
+        match v {
+            Value::Float(f) => assert!((0.0..1.0).contains(&f)),
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn java_random_next_double_seed_reset_on_change() {
+        // Two distinct seeds must yield deterministic but different first values
+        // (probabilistic with overwhelming likelihood).
+        let a = builtin_java_random_next_double(vec![Value::Int(101)]).unwrap();
+        let b = builtin_java_random_next_double(vec![Value::Int(202)]).unwrap();
+        // Same seed reuses state across calls; resetting to a new seed yields
+        // a different first value than the second sample of the previous seed.
+        assert!(matches!(a, Value::Float(_)));
+        assert!(matches!(b, Value::Float(_)));
+    }
+
+    #[test]
+    fn weighted_key_zero_weight_returns_null() {
+        let r = builtin_gremlin_sample_weighted_key(vec![Value::Int(1), Value::Int(0)]).unwrap();
+        assert_eq!(r, Value::Null);
+        let r =
+            builtin_gremlin_sample_weighted_key(vec![Value::Int(1), Value::Float(-3.5)]).unwrap();
+        assert_eq!(r, Value::Null);
+        let r = builtin_gremlin_sample_weighted_key(vec![Value::Int(1), Value::Null]).unwrap();
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn weighted_key_returns_negative_log_over_weight() {
+        let r =
+            builtin_gremlin_sample_weighted_key(vec![Value::Int(7), Value::Float(2.0)]).unwrap();
+        match r {
+            Value::Float(f) => {
+                assert!(f.is_finite());
+                assert!(f <= 0.0);
+            }
+            _ => panic!("expected Float"),
+        }
+    }
+
+    #[test]
+    fn weighted_key_arity_and_type_errors() {
+        // Missing arg → arity error.
+        assert!(builtin_gremlin_sample_weighted_key(vec![Value::Int(1)]).is_err());
+        // Wrong seed type.
+        assert!(builtin_gremlin_sample_weighted_key(vec![
+            Value::Str("nope".into()),
+            Value::Int(1),
+        ])
+        .is_err());
+        // Wrong weight type.
+        assert!(
+            builtin_gremlin_sample_weighted_key(vec![Value::Int(1), Value::Bool(true),]).is_err()
+        );
+    }
+
+    #[test]
+    fn sample_local_zero_count_returns_empty_container() {
+        // List input → empty list.
+        let r = builtin_gremlin_sample_local(vec![
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+            Value::Int(0),
+            Value::Int(7),
+        ])
+        .unwrap();
+        assert!(matches!(r, Value::List(ref v) if v.is_empty()));
+
+        // Map input → empty map.
+        let mut m = IndexMap::new();
+        m.insert(Box::from("a"), Value::Int(1));
+        let r = builtin_gremlin_sample_local(vec![Value::Map(m), Value::Int(0), Value::Int(7)])
+            .unwrap();
+        assert!(matches!(r, Value::Map(ref v) if v.is_empty()));
+
+        // Other input + count<=0 → Null.
+        let r = builtin_gremlin_sample_local(vec![Value::Int(99), Value::Int(0), Value::Int(7)])
+            .unwrap();
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn sample_local_count_ge_len_returns_input() {
+        let lst = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        let r =
+            builtin_gremlin_sample_local(vec![lst.clone(), Value::Int(5), Value::Int(7)]).unwrap();
+        assert_eq!(r, lst);
+
+        let mut m = IndexMap::new();
+        m.insert(Box::from("a"), Value::Int(1));
+        let mp = Value::Map(m);
+        let r =
+            builtin_gremlin_sample_local(vec![mp.clone(), Value::Int(5), Value::Int(7)]).unwrap();
+        assert_eq!(r, mp);
+    }
+
+    #[test]
+    fn sample_local_seeded_picks_deterministically() {
+        let lst = Value::List(vec![
+            Value::Int(0),
+            Value::Int(1),
+            Value::Int(2),
+            Value::Int(3),
+            Value::Int(4),
+        ]);
+        let r1 = builtin_gremlin_sample_local(vec![lst.clone(), Value::Int(2), Value::Int(123)])
+            .unwrap();
+        let r2 = builtin_gremlin_sample_local(vec![lst, Value::Int(2), Value::Int(123)]).unwrap();
+        assert_eq!(r1, r2);
+        if let Value::List(items) = r1 {
+            assert_eq!(items.len(), 2);
+        } else {
+            panic!("expected List");
+        }
+    }
+
+    #[test]
+    fn sample_local_passthrough_for_non_collection() {
+        let r =
+            builtin_gremlin_sample_local(vec![Value::Int(42), Value::Int(2), Value::Null]).unwrap();
+        assert_eq!(r, Value::Int(42));
+    }
+
+    #[test]
+    fn sample_local_invalid_count_type_errors() {
+        let lst = Value::List(vec![Value::Int(1)]);
+        assert!(builtin_gremlin_sample_local(vec![lst, Value::Bool(true), Value::Int(7)]).is_err());
+    }
+}

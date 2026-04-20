@@ -239,3 +239,89 @@ fn collect_all_aliases(op: &Operator) -> Vec<String> {
     }
     aliases
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Identifier, Label};
+    use crate::planner::operators::Operator;
+
+    fn id(s: &str) -> Identifier {
+        Identifier::new(s)
+    }
+
+    fn ns(name: &str) -> Operator {
+        Operator::NodeScan {
+            label: Some(Label::new("L")),
+            alias: id(name),
+        }
+    }
+
+    #[test]
+    fn collect_visible_filters_internal_aliases() {
+        // Build NodeScan(__hidden) under a Filter; should not surface.
+        let op = Operator::Filter {
+            child: Box::new(Operator::NodeScan {
+                label: None,
+                alias: id("__hidden"),
+            }),
+            predicate: Expr::Bool(true),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(!v.contains(&"__hidden".to_string()));
+    }
+
+    #[test]
+    fn collect_visible_dedups_repeated_aliases() {
+        // Apply combining the same alias on both sides → one occurrence after dedup.
+        let op = Operator::Apply {
+            outer: Box::new(ns("n")),
+            inner: Box::new(ns("n")),
+        };
+        assert_eq!(collect_visible_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn collect_all_node_scan_returns_alias() {
+        assert_eq!(collect_visible_aliases(&ns("n")), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn collect_all_unwind_appends_loop_var() {
+        let op = Operator::Unwind {
+            child: Box::new(ns("n")),
+            list_expr: Expr::List(vec![Expr::Integer(1)]),
+            alias: id("x"),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"n".to_string()));
+        assert!(v.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn collect_all_distinct_passes_through() {
+        let op = Operator::Distinct {
+            child: Box::new(ns("n")),
+            by_key: None,
+            productive: true,
+        };
+        assert_eq!(collect_visible_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn collect_all_singlerow_yields_empty() {
+        assert!(collect_visible_aliases(&Operator::SingleRow).is_empty());
+    }
+
+    #[test]
+    fn collect_all_cap_appends_keys() {
+        let op = Operator::Cap {
+            child: Box::new(ns("n")),
+            keys: vec!["a".to_string(), "b".to_string()],
+            reductions: Vec::new(),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"a".to_string()));
+        assert!(v.contains(&"b".to_string()));
+    }
+}

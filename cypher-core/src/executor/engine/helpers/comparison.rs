@@ -293,4 +293,160 @@ mod tests {
         let b = Value::List(vec![Value::Int(1), Value::Int(3)]);
         assert_eq!(cmp_values(&a, &b), Ordering::Less);
     }
+
+    #[test]
+    fn cmp_values_type_rank_orders_categories() {
+        // Map < Node < Edge < List < Path < String < Bool < Number < Null
+        use crate::storage::{EdgeId, NodeId};
+        let map = Value::Map(indexmap::IndexMap::new());
+        let node = Value::Node(NodeId(0));
+        let edge = Value::Edge(EdgeId(0));
+        let list = Value::List(Vec::new());
+        let s = Value::Str("a".into());
+        let b = Value::Bool(false);
+        let n = Value::Int(0);
+        assert_eq!(cmp_values(&map, &node), Ordering::Less);
+        assert_eq!(cmp_values(&node, &edge), Ordering::Less);
+        assert_eq!(cmp_values(&edge, &list), Ordering::Less);
+        assert_eq!(cmp_values(&list, &s), Ordering::Less);
+        assert_eq!(cmp_values(&s, &b), Ordering::Less);
+        assert_eq!(cmp_values(&b, &n), Ordering::Less);
+        assert_eq!(cmp_values(&n, &Value::Null), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_int_int_and_float_float() {
+        assert_eq!(cmp_values(&Value::Int(1), &Value::Int(2)), Ordering::Less);
+        assert_eq!(cmp_values(&Value::Int(5), &Value::Int(5)), Ordering::Equal);
+        assert_eq!(
+            cmp_values(&Value::Float(2.0), &Value::Float(1.5)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn cmp_values_int_vs_float_numeric() {
+        // Cross-numeric via safe_int_float_cmp.
+        assert_eq!(
+            cmp_values(&Value::Int(2), &Value::Float(2.5)),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_values(&Value::Float(2.5), &Value::Int(2)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn cmp_values_string_lex() {
+        assert_eq!(
+            cmp_values(&Value::Str("apple".into()), &Value::Str("banana".into())),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn cmp_values_dates_chronological() {
+        let d1 = Value::Date(jiff::civil::date(2024, 1, 1));
+        let d2 = Value::Date(jiff::civil::date(2024, 6, 1));
+        assert_eq!(cmp_values(&d1, &d2), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_localdatetime_chronological() {
+        let a = Value::LocalDateTime(jiff::civil::datetime(2024, 1, 1, 0, 0, 0, 0));
+        let b = Value::LocalDateTime(jiff::civil::datetime(2024, 1, 2, 0, 0, 0, 0));
+        assert_eq!(cmp_values(&a, &b), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_duration_lex_components() {
+        use crate::types::CypherDuration;
+        let a = Value::Duration(CypherDuration {
+            months: 0,
+            days: 1,
+            nanos: 0,
+        });
+        let b = Value::Duration(CypherDuration {
+            months: 0,
+            days: 2,
+            nanos: 0,
+        });
+        assert_eq!(cmp_values(&a, &b), Ordering::Less);
+        let c = Value::Duration(CypherDuration {
+            months: 1,
+            days: 0,
+            nanos: 0,
+        });
+        assert_eq!(cmp_values(&a, &c), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_node_by_id() {
+        use crate::storage::NodeId;
+        assert_eq!(
+            cmp_values(&Value::Node(NodeId(1)), &Value::Node(NodeId(2))),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn cmp_values_localtime_vs_zoned_time_consistent() {
+        let lt = Value::LocalTime(jiff::civil::time(10, 0, 0, 0));
+        let zt = Value::Time(jiff::civil::time(10, 0, 0, 0), 0);
+        assert_eq!(cmp_values(&lt, &zt), Ordering::Equal);
+    }
+
+    #[test]
+    fn cmp_values_map_by_len() {
+        let mut a = indexmap::IndexMap::new();
+        a.insert(Box::from("k"), Value::Int(1));
+        let b = indexmap::IndexMap::new();
+        assert_eq!(cmp_values(&Value::Map(b), &Value::Map(a)), Ordering::Less);
+    }
+
+    // ── gremlin_cmp_values ─────────────────────────────────────────────────
+
+    #[test]
+    fn gremlin_cmp_null_first() {
+        // Gremlin: Null < Bool < Number < ...
+        assert_eq!(
+            gremlin_cmp_values(&Value::Null, &Value::Bool(false)),
+            Ordering::Less
+        );
+        assert_eq!(
+            gremlin_cmp_values(&Value::Bool(false), &Value::Int(0)),
+            Ordering::Less
+        );
+        assert_eq!(
+            gremlin_cmp_values(&Value::Int(0), &Value::Str("a".into())),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn gremlin_cmp_property_map_by_key_then_value() {
+        use crate::storage::EdgeId;
+        let mut m1 = indexmap::IndexMap::new();
+        m1.insert(Box::from("~key"), Value::Str("a".into()));
+        m1.insert(Box::from("~value"), Value::Int(1));
+        m1.insert(Box::from("~element"), Value::Edge(EdgeId(1)));
+        let mut m2 = indexmap::IndexMap::new();
+        m2.insert(Box::from("~key"), Value::Str("b".into()));
+        m2.insert(Box::from("~value"), Value::Int(0));
+        m2.insert(Box::from("~element"), Value::Edge(EdgeId(99)));
+        // Edge property compare: by key first; "a" < "b".
+        assert_eq!(
+            gremlin_cmp_values(&Value::Map(m1), &Value::Map(m2)),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn civil_time_to_nanos_zero_and_nonzero() {
+        let zero = jiff::civil::time(0, 0, 0, 0);
+        assert_eq!(civil_time_to_nanos(&zero), 0);
+        let one_hour = jiff::civil::time(1, 0, 0, 0);
+        assert_eq!(civil_time_to_nanos(&one_hour), 3_600_000_000_000);
+    }
 }

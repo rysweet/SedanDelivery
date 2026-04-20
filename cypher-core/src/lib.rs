@@ -70,6 +70,12 @@ mod coverage_targeted_tests8;
 #[cfg(test)]
 mod coverage_targeted_tests9;
 
+#[cfg(test)]
+mod coverage_targeted_tests10;
+
+#[cfg(test)]
+mod coverage_targeted_tests11;
+
 pub mod ast;
 pub mod changelog;
 pub mod config;

@@ -245,3 +245,88 @@ impl<'a> QueryExecutor<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::property_aware_dedup_key;
+    use crate::storage::{EdgeId, NodeId};
+    use crate::types::Value;
+    use indexmap::IndexMap;
+
+    fn vprop_map(key: &str, value: Value, element: Value) -> Value {
+        let mut m = IndexMap::new();
+        m.insert(Box::from("~key"), Value::Str(key.into()));
+        m.insert(Box::from("~value"), value);
+        m.insert(Box::from("~element"), element);
+        Value::Map(m)
+    }
+
+    #[test]
+    fn falls_back_to_canonical_for_scalars_and_plain_maps() {
+        // Scalars use canonical_key directly.
+        assert_eq!(
+            property_aware_dedup_key(&Value::Int(7)),
+            Value::Int(7).canonical_key()
+        );
+        assert_eq!(
+            property_aware_dedup_key(&Value::Str("hi".into())),
+            Value::Str("hi".into()).canonical_key(),
+        );
+        // Plain map without ~key/~value → canonical key.
+        let mut m = IndexMap::new();
+        m.insert(Box::from("name"), Value::Str("Alice".into()));
+        let v = Value::Map(m);
+        assert_eq!(property_aware_dedup_key(&v), v.canonical_key());
+    }
+
+    #[test]
+    fn edge_property_dedups_by_key_and_value_only() {
+        let e1 = vprop_map("weight", Value::Int(5), Value::Edge(EdgeId(1)));
+        let e2 = vprop_map("weight", Value::Int(5), Value::Edge(EdgeId(99))); // different edge
+                                                                              // Edge property maps with same key+value collapse, even across edges.
+        assert_eq!(property_aware_dedup_key(&e1), property_aware_dedup_key(&e2));
+        // Different value → different key.
+        let e3 = vprop_map("weight", Value::Int(6), Value::Edge(EdgeId(1)));
+        assert_ne!(property_aware_dedup_key(&e1), property_aware_dedup_key(&e3));
+        // Different prop name → different key.
+        let e4 = vprop_map("color", Value::Int(5), Value::Edge(EdgeId(1)));
+        assert_ne!(property_aware_dedup_key(&e1), property_aware_dedup_key(&e4));
+    }
+
+    #[test]
+    fn vertex_property_dedups_by_key_and_element() {
+        // Same prop on same vertex but different ~value (should still dedup).
+        let v1 = vprop_map("name", Value::Str("A".into()), Value::Node(NodeId(1)));
+        let v2 = vprop_map("name", Value::Str("Z".into()), Value::Node(NodeId(1)));
+        assert_eq!(property_aware_dedup_key(&v1), property_aware_dedup_key(&v2));
+        // Different vertex → different key.
+        let v3 = vprop_map("name", Value::Str("A".into()), Value::Node(NodeId(2)));
+        assert_ne!(property_aware_dedup_key(&v1), property_aware_dedup_key(&v3));
+        // Different prop → different key.
+        let v4 = vprop_map("age", Value::Str("A".into()), Value::Node(NodeId(1)));
+        assert_ne!(property_aware_dedup_key(&v1), property_aware_dedup_key(&v4));
+    }
+
+    #[test]
+    fn meta_property_dedups_when_parent_is_a_property_map() {
+        // Parent is itself a vertex-property map (~key/~value present).
+        let parent = vprop_map("name", Value::Str("A".into()), Value::Node(NodeId(1)));
+        let parent2 = vprop_map("name", Value::Str("A".into()), Value::Node(NodeId(2)));
+        let meta1 = vprop_map("lang", Value::Str("en".into()), parent);
+        let meta2 = vprop_map("lang", Value::Str("en".into()), parent2);
+        // Meta-property dedup ignores the parent property's element identity.
+        assert_eq!(
+            property_aware_dedup_key(&meta1),
+            property_aware_dedup_key(&meta2),
+        );
+    }
+
+    #[test]
+    fn map_with_only_key_falls_through_to_canonical() {
+        // No ~value present → falls through to canonical key.
+        let mut m = IndexMap::new();
+        m.insert(Box::from("~key"), Value::Str("foo".into()));
+        let v = Value::Map(m);
+        assert_eq!(property_aware_dedup_key(&v), v.canonical_key());
+    }
+}

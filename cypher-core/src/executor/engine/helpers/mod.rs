@@ -368,4 +368,101 @@ mod tests {
             matching.len()
         );
     }
+
+    // ── Additional discover_operator_aliases coverage ───────────────────────
+
+    fn id(s: &str) -> Identifier {
+        Identifier::new(s)
+    }
+
+    fn ns(name: &str) -> Operator {
+        Operator::NodeScan {
+            label: Some(Label::new("L")),
+            alias: id(name),
+        }
+    }
+
+    #[test]
+    fn discover_aliases_filter_chain_passes_through() {
+        let op = Operator::Filter {
+            child: Box::new(ns("n")),
+            predicate: Expr::Bool(true),
+        };
+        assert_eq!(discover_operator_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn discover_aliases_sort_limit_skip_distinct_passthrough() {
+        for op in [
+            Operator::Sort {
+                child: Box::new(ns("n")),
+                items: Vec::new(),
+                gremlin_order: false,
+            },
+            Operator::Limit {
+                child: Box::new(ns("n")),
+                count: Expr::Integer(1),
+            },
+            Operator::Skip {
+                child: Box::new(ns("n")),
+                count: Expr::Integer(1),
+            },
+            Operator::Distinct {
+                child: Box::new(ns("n")),
+                by_key: None,
+                productive: true,
+            },
+        ] {
+            assert_eq!(discover_operator_aliases(&op), vec!["n".to_string()]);
+        }
+    }
+
+    #[test]
+    fn discover_aliases_unwind_appends_var() {
+        let op = Operator::Unwind {
+            child: Box::new(ns("n")),
+            list_expr: Expr::List(vec![Expr::Integer(1)]),
+            alias: id("x"),
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"n".to_string()));
+        assert!(r.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_apply_concatenates() {
+        let op = Operator::Apply {
+            outer: Box::new(ns("a")),
+            inner: Box::new(ns("b")),
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"a".to_string()));
+        assert!(r.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_singlerow_and_produce_results_empty() {
+        assert!(discover_operator_aliases(&Operator::SingleRow).is_empty());
+    }
+
+    // ── eval_count_expr more cases ─────────────────────────────────────────
+
+    #[test]
+    fn eval_count_expr_non_int_is_error() {
+        assert!(eval_count_expr(&Expr::Str("x".into()), &Row::new()).is_err());
+        assert!(eval_count_expr(&Expr::Bool(true), &Row::new()).is_err());
+    }
+
+    // ── inject_parameters: empty row gets all params ───────────────────────
+
+    #[test]
+    fn inject_params_into_empty_row() {
+        let mut row = Row::new();
+        let mut params = HashMap::new();
+        params.insert("$a".to_string(), Value::Int(1));
+        params.insert("$b".to_string(), Value::Str("x".into()));
+        inject_parameters(&mut row, &params);
+        assert_eq!(row.get("$a"), Some(&Value::Int(1)));
+        assert_eq!(row.get("$b"), Some(&Value::Str("x".into())));
+    }
 }
