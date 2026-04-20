@@ -419,3 +419,258 @@ fn duration_encoding_negative_nanos_normalized() {
         panic!("expected Structure for Duration");
     }
 }
+
+// ── path_to_bolt: reverse direction & repeated edges ─────────────────────
+
+#[test]
+fn path_to_bolt_reverse_direction_uses_negative_index() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    // Edge from n1 -> n2 stored, but path traverses n2 -> n1 (reverse).
+    let e1 = store
+        .create_edge("test", n1, n2, "KNOWS".to_string(), IndexMap::new())
+        .unwrap();
+    let bolt = path_to_bolt(&[n2, n1], &[e1], &store, "test");
+    let BoltValue::Structure { fields, .. } = bolt else {
+        panic!("expected Structure");
+    };
+    let BoltValue::List(indices) = &fields[2] else {
+        panic!("expected indices list");
+    };
+    // First index is the rel-index (-1 because reverse direction).
+    assert_eq!(indices[0], BoltValue::Int(-1));
+}
+
+#[test]
+fn path_to_bolt_with_missing_edge_uses_empty_relationship() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let bogus = cypher_core::storage::EdgeId(10_000);
+    let bolt = path_to_bolt(&[n1, n2], &[bogus], &store, "test");
+    let BoltValue::Structure { fields, .. } = bolt else {
+        panic!("expected Structure");
+    };
+    let BoltValue::List(rels) = &fields[1] else {
+        panic!("expected rels list");
+    };
+    assert_eq!(rels.len(), 1);
+    let BoltValue::Structure { tag, fields } = &rels[0] else {
+        panic!("expected unbound rel");
+    };
+    assert_eq!(*tag, tags::TAG_UNBOUND_RELATIONSHIP);
+    assert_eq!(fields[1], BoltValue::String(String::new()));
+}
+
+#[test]
+fn path_to_bolt_repeated_edge_dedupes() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let e1 = store
+        .create_edge("test", n1, n2, "REL".into(), IndexMap::new())
+        .unwrap();
+    // Walk n1 -> n2 -> n1 reusing the same edge.
+    let bolt = path_to_bolt(&[n1, n2, n1], &[e1, e1], &store, "test");
+    let BoltValue::Structure { fields, .. } = bolt else {
+        panic!("expected Structure");
+    };
+    let BoltValue::List(rels) = &fields[1] else {
+        panic!("expected rels list");
+    };
+    assert_eq!(rels.len(), 1, "duplicate edges should appear once");
+    let BoltValue::List(indices) = &fields[2] else {
+        panic!("expected indices list");
+    };
+    // 2 steps => 4 entries.
+    assert_eq!(indices.len(), 4);
+}
+
+// ── path_to_bolt_cached ──────────────────────────────────────────────────
+
+#[test]
+fn path_to_bolt_cached_uses_cached_data() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let e1 = store
+        .create_edge("test", n1, n2, "REL".into(), IndexMap::new())
+        .unwrap();
+
+    let cache = BoltGraphCache::prefetch(&store, "test", &[n1, n2], &[e1]);
+    let bolt = path_to_bolt_cached(&[n1, n2], &[e1], &cache, &store, "test");
+    let BoltValue::Structure { tag, fields } = bolt else {
+        panic!("expected Structure");
+    };
+    assert_eq!(tag, tags::TAG_PATH);
+    let BoltValue::List(nodes) = &fields[0] else {
+        panic!("expected nodes list");
+    };
+    assert_eq!(nodes.len(), 2);
+}
+
+#[test]
+fn path_to_bolt_cached_falls_back_when_edge_missing_from_cache() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let e1 = store
+        .create_edge("test", n1, n2, "REL".into(), IndexMap::new())
+        .unwrap();
+    // Empty cache → path_to_bolt_cached should fall back to path_to_bolt.
+    let cache = BoltGraphCache::prefetch(&store, "test", &[], &[]);
+    let bolt = path_to_bolt_cached(&[n1, n2], &[e1], &cache, &store, "test");
+    assert!(matches!(bolt, BoltValue::Structure { tag, .. } if tag == tags::TAG_PATH));
+}
+
+#[test]
+fn path_to_bolt_cached_handles_missing_edge_in_store_via_cache() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let bogus = cypher_core::storage::EdgeId(99_999);
+    // prefetch reports None for the bogus edge.
+    let cache = BoltGraphCache::prefetch(&store, "test", &[n1, n2], &[bogus]);
+    let bolt = path_to_bolt_cached(&[n1, n2], &[bogus], &cache, &store, "test");
+    let BoltValue::Structure { fields, .. } = bolt else {
+        panic!("expected Structure");
+    };
+    let BoltValue::List(rels) = &fields[1] else {
+        panic!("expected rels list");
+    };
+    let BoltValue::Structure {
+        fields: rel_fields, ..
+    } = &rels[0]
+    else {
+        panic!("expected unbound rel");
+    };
+    assert_eq!(rel_fields[1], BoltValue::String(String::new()));
+}
+
+// ── BoltGraphCache & helpers ─────────────────────────────────────────────
+
+#[test]
+fn bolt_graph_cache_prefetch_with_empty_inputs_is_empty() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let cache = BoltGraphCache::prefetch(&store, "test", &[], &[]);
+    assert!(cache.node(NodeId(0)).is_none());
+    assert!(cache.edge(cypher_core::storage::EdgeId(0)).is_none());
+}
+
+#[test]
+fn bolt_graph_cache_returns_some_none_for_missing_ids() {
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let bogus_node = NodeId(424242);
+    let bogus_edge = cypher_core::storage::EdgeId(424242);
+    let cache = BoltGraphCache::prefetch(&store, "test", &[bogus_node], &[bogus_edge]);
+    assert!(matches!(cache.node(bogus_node), Some(None)));
+    assert!(matches!(cache.edge(bogus_edge), Some(None)));
+}
+
+#[test]
+fn u64_to_bolt_int_wraps_overflow_to_null() {
+    use super::u64_to_bolt_int;
+    assert_eq!(u64_to_bolt_int(0, "ctx"), BoltValue::Int(0));
+    assert_eq!(
+        u64_to_bolt_int(i64::MAX as u64, "ctx"),
+        BoltValue::Int(i64::MAX)
+    );
+    assert_eq!(u64_to_bolt_int(u64::MAX, "ctx"), BoltValue::Null);
+}
+
+// ── node_to_bolt_cached / edge_to_bolt_cached ────────────────────────────
+
+#[test]
+fn node_to_bolt_cached_serves_from_cache() {
+    use super::entities::node_to_bolt_cached;
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let mut props = IndexMap::new();
+    props.insert("name".to_string(), Value::Str("Alice".into()));
+    let n = store
+        .create_node("test", vec!["Person".into()], props)
+        .unwrap();
+    let cache = BoltGraphCache::prefetch(&store, "test", &[n], &[]);
+    let bolt = node_to_bolt_cached(n, &cache, &store, "test");
+    let BoltValue::Structure { tag, fields } = bolt else {
+        panic!("expected Structure");
+    };
+    assert_eq!(tag, tags::TAG_NODE);
+    assert_eq!(fields[0], BoltValue::Int(n.0 as i64));
+}
+
+#[test]
+fn node_to_bolt_cached_returns_null_for_cached_missing_node() {
+    use super::entities::node_to_bolt_cached;
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let bogus = NodeId(7777);
+    let cache = BoltGraphCache::prefetch(&store, "test", &[bogus], &[]);
+    let bolt = node_to_bolt_cached(bogus, &cache, &store, "test");
+    assert_eq!(bolt, BoltValue::Null);
+}
+
+#[test]
+fn node_to_bolt_cached_falls_back_to_store_when_not_in_cache() {
+    use super::entities::node_to_bolt_cached;
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    // Empty cache — should fall back to node_to_bolt.
+    let cache = BoltGraphCache::prefetch(&store, "test", &[], &[]);
+    let bolt = node_to_bolt_cached(n, &cache, &store, "test");
+    assert!(matches!(bolt, BoltValue::Structure { .. }));
+}
+
+#[test]
+fn edge_to_bolt_cached_serves_from_cache() {
+    use super::entities::edge_to_bolt_cached;
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let e = store
+        .create_edge("test", n1, n2, "T".into(), IndexMap::new())
+        .unwrap();
+    let cache = BoltGraphCache::prefetch(&store, "test", &[n1, n2], &[e]);
+    let bolt = edge_to_bolt_cached(e, &cache, &store, "test");
+    let BoltValue::Structure { tag, .. } = bolt else {
+        panic!("expected Structure");
+    };
+    assert_eq!(tag, tags::TAG_RELATIONSHIP);
+}
+
+#[test]
+fn edge_to_bolt_cached_returns_null_for_cached_missing_edge() {
+    use super::entities::edge_to_bolt_cached;
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let bogus = cypher_core::storage::EdgeId(7777);
+    let cache = BoltGraphCache::prefetch(&store, "test", &[], &[bogus]);
+    let bolt = edge_to_bolt_cached(bogus, &cache, &store, "test");
+    assert_eq!(bolt, BoltValue::Null);
+}
+
+#[test]
+fn edge_to_bolt_cached_falls_back_to_store_when_not_in_cache() {
+    use super::entities::edge_to_bolt_cached;
+    let store = InMemoryGraphStore::new();
+    store.create_graph("test").unwrap();
+    let n1 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let n2 = store.create_node("test", vec![], IndexMap::new()).unwrap();
+    let e = store
+        .create_edge("test", n1, n2, "T".into(), IndexMap::new())
+        .unwrap();
+    let cache = BoltGraphCache::prefetch(&store, "test", &[], &[]);
+    let bolt = edge_to_bolt_cached(e, &cache, &store, "test");
+    assert!(matches!(bolt, BoltValue::Structure { .. }));
+}

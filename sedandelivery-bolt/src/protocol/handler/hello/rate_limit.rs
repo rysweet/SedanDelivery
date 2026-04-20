@@ -300,4 +300,80 @@ mod tests {
             "expired auth-failure entries should be pruned"
         );
     }
+
+    #[test]
+    fn normalize_ip_handles_v4_and_v6() {
+        let v4: IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(normalize_ip(v4), "127.0.0.1");
+        let v6: IpAddr = "::1".parse().unwrap();
+        assert_eq!(normalize_ip(v6), "::1");
+    }
+
+    #[test]
+    fn in_memory_record_failure_and_success_round_trip() {
+        let lim = InMemoryLimiter::new();
+        // First N attempts (under the threshold) must not return rate-limited.
+        for _ in 0..5 {
+            assert!(!lim.record_failure("test-key-1"));
+        }
+        // record_success clears the counter.
+        lim.record_success("test-key-1");
+        assert!(!lim.map.contains_key("test-key-1"));
+    }
+
+    #[test]
+    fn in_memory_record_failure_returns_true_after_threshold() {
+        let lim = InMemoryLimiter::new();
+        let max = max_failures_per_ip();
+        let key = "exceeds-threshold";
+        // Exactly `max` failures should not yet trip; the (max+1)-th does.
+        for _ in 0..max {
+            assert!(!lim.record_failure(key));
+        }
+        assert!(
+            lim.record_failure(key),
+            "(max+1)-th failure must signal rate-limited"
+        );
+    }
+
+    #[test]
+    fn in_memory_sweep_keeps_recent_entries() {
+        let lim = InMemoryLimiter::new();
+        lim.record_failure("recent-key");
+        lim.sweep();
+        // Recent entry should still be there.
+        assert!(lim.map.contains_key("recent-key"));
+    }
+
+    #[tokio::test]
+    async fn auth_rate_limiter_record_success_is_idempotent() {
+        // The global limiter is always InMemory in tests because GQL_REDIS_URL
+        // is unset. Calling record_success on a missing key is a no-op.
+        record_success("never-failed-ip").await;
+    }
+
+    #[tokio::test]
+    async fn auth_rate_limiter_record_failure_then_success_clears_state() {
+        let key = format!("rate-limit-cleanup-test-{}", std::process::id());
+        record_failure(&key).await;
+        record_success(&key).await;
+        // After success, recording another failure starts fresh — not rate-limited.
+        assert!(!record_failure(&key).await);
+        record_success(&key).await;
+    }
+
+    #[test]
+    fn redis_limiter_clear_cached_conn_is_idempotent() {
+        let client = redis::Client::open("redis://127.0.0.1:0/").unwrap();
+        let lim = RedisLimiter::new(client);
+        // No tokio runtime needed for the constructor; clear requires one.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            lim.clear_cached_conn().await;
+            lim.clear_cached_conn().await;
+        });
+    }
 }

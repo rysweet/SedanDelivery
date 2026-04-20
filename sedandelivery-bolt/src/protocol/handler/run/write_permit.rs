@@ -149,3 +149,86 @@ pub(super) fn query_requires_write_permit(query: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::query_requires_write_permit as needs;
+
+    #[test]
+    fn read_only_queries_do_not_need_write_permit() {
+        for q in [
+            "MATCH (n) RETURN n",
+            "RETURN 1",
+            "WITH 1 AS x RETURN x",
+            "CALL dbms.components()",
+            "",
+            "   ",
+        ] {
+            assert!(!needs(q), "query {q:?} should not require write permit");
+        }
+    }
+
+    #[test]
+    fn write_keywords_in_any_case_require_permit() {
+        for q in [
+            "CREATE (n)",
+            "create (n)",
+            "Merge (n:X {id:1})",
+            "DELETE n",
+            "set n.x = 1",
+            "REMOVE n.x",
+            "MATCH (n) DETACH DELETE n",
+            "MATCH (n) SET n.x = 2",
+        ] {
+            assert!(needs(q), "query {q:?} should require write permit");
+        }
+    }
+
+    #[test]
+    fn write_keyword_inside_string_literal_is_ignored() {
+        // Single quotes
+        assert!(!needs("RETURN 'CREATE'"));
+        assert!(!needs("RETURN 'MERGE me'"));
+        // Double quotes
+        assert!(!needs("RETURN \"DELETE this\""));
+        // Backticks
+        assert!(!needs("MATCH (n:`SET`) RETURN n"));
+        // Escaped quote inside single-quoted string must not terminate the string
+        assert!(!needs(r"RETURN 'it\'s CREATE'"));
+    }
+
+    #[test]
+    fn write_keyword_inside_line_comment_is_ignored() {
+        assert!(!needs("MATCH (n) RETURN n // CREATE this later"));
+        assert!(!needs("// SET n.x = 1\nMATCH (n) RETURN n"));
+    }
+
+    #[test]
+    fn write_keyword_inside_block_comment_is_ignored() {
+        assert!(!needs("MATCH (n) /* DELETE n */ RETURN n"));
+        // Unterminated block comment should not panic and should not match.
+        assert!(!needs("MATCH (n) /* CREATE this RETURN n"));
+    }
+
+    #[test]
+    fn write_keyword_after_block_comment_still_detected() {
+        assert!(needs("/* read */ CREATE (n)"));
+        assert!(needs("// preface\nMERGE (n {id:1})"));
+    }
+
+    #[test]
+    fn substring_of_write_keyword_does_not_match() {
+        // CREATED contains CREATE but is a longer alphanumeric token.
+        assert!(!needs("RETURN CREATED"));
+        assert!(!needs("MATCH (n {created: 1}) RETURN n"));
+        assert!(!needs("RETURN MERGER"));
+    }
+
+    #[test]
+    fn non_ascii_bytes_do_not_panic() {
+        // Mixed unicode and a write keyword.
+        assert!(needs("MATCH (n) WHERE n.name = 'café' SET n.x = 1"));
+        // Pure unicode without keywords.
+        assert!(!needs("RETURN 'café'"));
+    }
+}

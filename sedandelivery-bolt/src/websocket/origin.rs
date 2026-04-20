@@ -97,3 +97,123 @@ pub(super) fn validate_origin(
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_tungstenite::tungstenite::handshake::server::Request;
+
+    fn req_with_origin(origin: Option<&str>) -> Request {
+        let mut builder = Request::builder().uri("/").method("GET");
+        if let Some(o) = origin {
+            builder = builder.header("Origin", o);
+        }
+        builder.body(()).unwrap()
+    }
+
+    #[test]
+    fn allowlist_from_env_parses_csv() {
+        let policy = OriginPolicy::Allowlist(vec![
+            Box::from("https://a.example"),
+            Box::from("https://b.example"),
+        ]);
+        assert!(policy.allows("https://a.example"));
+        assert!(policy.allows("https://b.example"));
+        assert!(!policy.allows("https://c.example"));
+    }
+
+    #[test]
+    fn allow_all_allows_anything() {
+        assert!(OriginPolicy::AllowAll.allows("anything"));
+        assert!(OriginPolicy::AllowAll.allows(""));
+    }
+
+    #[test]
+    fn reject_presented_origins_blocks_all() {
+        let p = OriginPolicy::RejectPresentedOrigins;
+        assert!(!p.allows("https://x"));
+    }
+
+    #[test]
+    fn missing_origin_with_reject_or_allow_all_passes() {
+        for p in [OriginPolicy::RejectPresentedOrigins, OriginPolicy::AllowAll] {
+            assert!(validate_origin(&req_with_origin(None), &p).is_ok());
+        }
+    }
+
+    #[test]
+    fn missing_origin_with_allowlist_is_forbidden() {
+        let p = OriginPolicy::Allowlist(vec![Box::from("https://x")]);
+        let err = validate_origin(&req_with_origin(None), &p).unwrap_err();
+        assert_eq!(
+            err.status(),
+            tokio_tungstenite::tungstenite::http::StatusCode::FORBIDDEN
+        );
+    }
+
+    #[test]
+    fn allowed_origin_passes() {
+        let p = OriginPolicy::Allowlist(vec![Box::from("https://ok.example")]);
+        assert!(validate_origin(&req_with_origin(Some("https://ok.example")), &p).is_ok());
+    }
+
+    #[test]
+    fn unlisted_origin_is_forbidden() {
+        let p = OriginPolicy::Allowlist(vec![Box::from("https://ok.example")]);
+        assert!(validate_origin(&req_with_origin(Some("https://nope.example")), &p).is_err());
+    }
+
+    #[test]
+    fn allow_all_passes_with_origin() {
+        assert!(validate_origin(
+            &req_with_origin(Some("https://anything")),
+            &OriginPolicy::AllowAll
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn reject_presented_origins_blocks_when_origin_present() {
+        assert!(validate_origin(
+            &req_with_origin(Some("https://x")),
+            &OriginPolicy::RejectPresentedOrigins
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn origin_policy_from_env_parses_wildcard() {
+        // OriginPolicy::from_env is private to the module; exercise via env var
+        // for the wildcard branch.
+        let prev = std::env::var("BOLT_WS_ALLOWED_ORIGINS").ok();
+        std::env::set_var("BOLT_WS_ALLOWED_ORIGINS", "*");
+        assert!(matches!(OriginPolicy::from_env(), OriginPolicy::AllowAll));
+
+        std::env::set_var("BOLT_WS_ALLOWED_ORIGINS", "https://a, https://b ,, ");
+        match OriginPolicy::from_env() {
+            OriginPolicy::Allowlist(list) => {
+                assert_eq!(list.len(), 2);
+                assert!(list.iter().any(|s| s.as_ref() == "https://a"));
+                assert!(list.iter().any(|s| s.as_ref() == "https://b"));
+            }
+            other => panic!("expected Allowlist, got {other:?}"),
+        }
+
+        std::env::set_var("BOLT_WS_ALLOWED_ORIGINS", " , ,");
+        assert!(matches!(
+            OriginPolicy::from_env(),
+            OriginPolicy::RejectPresentedOrigins
+        ));
+
+        std::env::remove_var("BOLT_WS_ALLOWED_ORIGINS");
+        assert!(matches!(
+            OriginPolicy::from_env(),
+            OriginPolicy::RejectPresentedOrigins
+        ));
+
+        match prev {
+            Some(v) => std::env::set_var("BOLT_WS_ALLOWED_ORIGINS", v),
+            None => std::env::remove_var("BOLT_WS_ALLOWED_ORIGINS"),
+        }
+    }
+}

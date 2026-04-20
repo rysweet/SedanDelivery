@@ -133,6 +133,7 @@ fn parse_index_for_on(upper: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cypher_core::storage::InMemoryGraphStore;
 
     #[test]
     fn parse_index_for_on_basic() {
@@ -140,5 +141,108 @@ mod tests {
         let (label, prop) = parse_index_for_on(q).unwrap();
         assert_eq!(label, "ALABEL");
         assert_eq!(prop, "PROP");
+    }
+
+    #[test]
+    fn parse_index_for_on_returns_none_without_for_clause() {
+        assert!(parse_index_for_on("CREATE INDEX FOO BAR").is_none());
+    }
+
+    #[test]
+    fn parse_index_for_on_returns_none_without_label_colon() {
+        assert!(parse_index_for_on("CREATE INDEX X FOR (N) ON (N.P)").is_none());
+    }
+
+    #[test]
+    fn parse_index_for_on_returns_none_without_property_dot() {
+        assert!(parse_index_for_on("CREATE INDEX X FOR (N:L) ON (NP)").is_none());
+    }
+
+    fn make_store_with_graph(graph: &str) -> InMemoryGraphStore {
+        let store = InMemoryGraphStore::new();
+        store.create_graph(graph).unwrap();
+        store
+    }
+
+    #[test]
+    fn handle_create_index_creates_index() {
+        let store = make_store_with_graph("g");
+        let result = handle_create_index(
+            &store,
+            "g",
+            "CREATE INDEX my_idx FOR (n:Person) ON (n.name)",
+        );
+        let ar = result.expect("create index ok");
+        assert_eq!(ar.indexes_added, 1);
+        let indexes = store.list_indexes("g").unwrap();
+        assert!(indexes
+            .iter()
+            .any(|i| i.label.eq_ignore_ascii_case("PERSON")
+                && i.property.eq_ignore_ascii_case("NAME")));
+    }
+
+    #[test]
+    fn handle_create_index_returns_syntax_error_for_malformed() {
+        let store = make_store_with_graph("g");
+        let result = handle_create_index(&store, "g", "CREATE INDEX broken");
+        assert!(matches!(result, Err(GqlError::Parse(_))));
+    }
+
+    #[test]
+    fn handle_drop_index_by_canonical_name() {
+        let store = make_store_with_graph("g");
+        handle_create_index(&store, "g", "CREATE INDEX foo FOR (n:L) ON (n.p)").unwrap();
+        let ar = handle_drop_index(&store, "g", "DROP INDEX index_L_p").unwrap();
+        assert_eq!(ar.indexes_removed, 1);
+        assert!(store.list_indexes("g").unwrap().is_empty());
+    }
+
+    #[test]
+    fn handle_drop_index_by_short_name() {
+        let store = make_store_with_graph("g");
+        handle_create_index(&store, "g", "CREATE INDEX foo FOR (n:L) ON (n.p)").unwrap();
+        let ar = handle_drop_index(&store, "g", "DROP INDEX L_p").unwrap();
+        assert_eq!(ar.indexes_removed, 1);
+    }
+
+    #[test]
+    fn handle_drop_index_by_label_alone() {
+        let store = make_store_with_graph("g");
+        handle_create_index(&store, "g", "CREATE INDEX foo FOR (n:L) ON (n.p)").unwrap();
+        let ar = handle_drop_index(&store, "g", "DROP INDEX L").unwrap();
+        assert_eq!(ar.indexes_removed, 1);
+    }
+
+    #[test]
+    fn handle_drop_index_falls_back_when_single_index_present() {
+        let store = make_store_with_graph("g");
+        handle_create_index(&store, "g", "CREATE INDEX foo FOR (n:L) ON (n.p)").unwrap();
+        // arbitrary name that doesn't match any canonical form
+        let ar = handle_drop_index(&store, "g", "DROP INDEX random_name").unwrap();
+        assert_eq!(ar.indexes_removed, 1);
+    }
+
+    #[test]
+    fn handle_drop_index_if_exists_silently_succeeds_when_missing() {
+        let store = make_store_with_graph("g");
+        let ar = handle_drop_index(&store, "g", "DROP INDEX missing IF EXISTS").unwrap();
+        assert_eq!(ar.indexes_removed, 1);
+    }
+
+    #[test]
+    fn handle_drop_index_errors_when_not_found_and_no_if_exists() {
+        let store = make_store_with_graph("g");
+        // Two indexes so the single-index fallback does not kick in.
+        handle_create_index(&store, "g", "CREATE INDEX a FOR (n:L1) ON (n.p)").unwrap();
+        handle_create_index(&store, "g", "CREATE INDEX b FOR (n:L2) ON (n.p)").unwrap();
+        let result = handle_drop_index(&store, "g", "DROP INDEX nope");
+        assert!(matches!(result, Err(GqlError::Storage(_))));
+    }
+
+    #[test]
+    fn handle_drop_index_rejects_empty_name() {
+        let store = make_store_with_graph("g");
+        let result = handle_drop_index(&store, "g", "DROP INDEX ");
+        assert!(matches!(result, Err(GqlError::Parse(_))));
     }
 }

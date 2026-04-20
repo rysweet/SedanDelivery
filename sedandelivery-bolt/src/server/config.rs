@@ -126,3 +126,164 @@ pub(crate) fn drain_timeout() -> Duration {
         .unwrap_or(30);
     Duration::from_secs(secs)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serialise env-mutating tests because `from_env()` reads many keys.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Snapshot the BOLT_* env vars touched by `ServerConfig::from_env()` and
+    /// `drain_timeout()`, then restore them on drop. Holds `ENV_LOCK` to keep
+    /// concurrent tests from racing on shared process state.
+    struct EnvGuard {
+        prev: Vec<(&'static str, Option<String>)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            let lock = match ENV_LOCK.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let keys = [
+                "BOLT_BIND_ADDR",
+                "BOLT_MAX_CONNECTIONS",
+                "BOLT_IDLE_TIMEOUT_SECS",
+                "BOLT_MAX_CONNECTION_LIFETIME_SECS",
+                "BOLT_WRITE_CONCURRENCY",
+                "BOLT_HANDSHAKE_TIMEOUT_MS",
+                "BOLT_MAX_CONN_PER_IP",
+                "BOLT_TCP_KEEPALIVE_SECS",
+                "BOLT_REQUIRE_TLS",
+                "BOLT_DRAIN_TIMEOUT_SECS",
+            ];
+            let prev: Vec<(&'static str, Option<String>)> =
+                keys.iter().map(|k| (*k, std::env::var(k).ok())).collect();
+            for k in &keys {
+                std::env::remove_var(k);
+            }
+            Self { prev, _lock: lock }
+        }
+
+        fn set(&self, k: &str, v: &str) {
+            std::env::set_var(k, v);
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in self.prev.drain(..) {
+                match v {
+                    Some(val) => std::env::set_var(k, val),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn from_env_returns_documented_defaults_when_unset() {
+        let _g = EnvGuard::new();
+        let cfg = ServerConfig::from_env();
+        assert_eq!(cfg.bind_addr, "0.0.0.0:7687");
+        assert_eq!(cfg.max_connections, 1024);
+        assert_eq!(cfg.idle_timeout_secs, 300);
+        assert_eq!(cfg.idle_timeout, Duration::from_secs(300));
+        assert_eq!(cfg.max_connection_lifetime_secs, 1800);
+        assert_eq!(cfg.max_connection_lifetime, Some(Duration::from_secs(1800)));
+        assert_eq!(cfg.write_concurrency, 128);
+        assert_eq!(cfg.handshake_timeout_ms, 5_000);
+        assert_eq!(cfg.handshake_timeout, Duration::from_millis(5_000));
+        assert_eq!(cfg.max_conns_per_ip, 50);
+        assert_eq!(cfg.keepalive_secs, 120);
+        assert!(!cfg.require_tls);
+    }
+
+    #[test]
+    fn from_env_picks_up_explicit_overrides() {
+        let g = EnvGuard::new();
+        g.set("BOLT_BIND_ADDR", "127.0.0.1:9999");
+        g.set("BOLT_MAX_CONNECTIONS", "256");
+        g.set("BOLT_IDLE_TIMEOUT_SECS", "60");
+        g.set("BOLT_WRITE_CONCURRENCY", "8");
+        g.set("BOLT_HANDSHAKE_TIMEOUT_MS", "1500");
+        g.set("BOLT_MAX_CONN_PER_IP", "9");
+        g.set("BOLT_TCP_KEEPALIVE_SECS", "30");
+        g.set("BOLT_REQUIRE_TLS", "1");
+
+        let cfg = ServerConfig::from_env();
+        assert_eq!(cfg.bind_addr, "127.0.0.1:9999");
+        assert_eq!(cfg.max_connections, 256);
+        assert_eq!(cfg.idle_timeout_secs, 60);
+        assert_eq!(cfg.write_concurrency, 8);
+        assert_eq!(cfg.handshake_timeout_ms, 1500);
+        assert_eq!(cfg.max_conns_per_ip, 9);
+        assert_eq!(cfg.keepalive_secs, 30);
+        assert!(cfg.require_tls);
+    }
+
+    #[test]
+    fn lifetime_zero_disables_max_connection_lifetime() {
+        let g = EnvGuard::new();
+        g.set("BOLT_MAX_CONNECTION_LIFETIME_SECS", "0");
+        let cfg = ServerConfig::from_env();
+        assert_eq!(cfg.max_connection_lifetime_secs, 0);
+        assert!(cfg.max_connection_lifetime.is_none());
+    }
+
+    #[test]
+    fn require_tls_only_activates_for_exact_one() {
+        let g = EnvGuard::new();
+        for v in &["true", "yes", "0", "TRUE", ""] {
+            g.set("BOLT_REQUIRE_TLS", v);
+            assert!(
+                !ServerConfig::from_env().require_tls,
+                "BOLT_REQUIRE_TLS={v:?} must not enable TLS enforcement",
+            );
+        }
+        g.set("BOLT_REQUIRE_TLS", "1");
+        assert!(ServerConfig::from_env().require_tls);
+    }
+
+    #[test]
+    fn handshake_timeout_falls_back_to_default_on_garbage() {
+        let g = EnvGuard::new();
+        g.set("BOLT_HANDSHAKE_TIMEOUT_MS", "not-a-number");
+        let cfg = ServerConfig::from_env();
+        assert_eq!(cfg.handshake_timeout_ms, 5_000);
+    }
+
+    #[test]
+    fn max_conns_per_ip_falls_back_to_default_on_garbage() {
+        let g = EnvGuard::new();
+        g.set("BOLT_MAX_CONN_PER_IP", "abc");
+        let cfg = ServerConfig::from_env();
+        assert_eq!(cfg.max_conns_per_ip, 50);
+    }
+
+    #[test]
+    fn drain_timeout_default_when_unset() {
+        let _g = EnvGuard::new();
+        assert_eq!(drain_timeout(), Duration::from_secs(30));
+    }
+
+    #[test]
+    fn drain_timeout_uses_explicit_value() {
+        let g = EnvGuard::new();
+        g.set("BOLT_DRAIN_TIMEOUT_SECS", "7");
+        assert_eq!(drain_timeout(), Duration::from_secs(7));
+    }
+
+    #[test]
+    fn drain_timeout_rejects_zero_and_garbage() {
+        let g = EnvGuard::new();
+        g.set("BOLT_DRAIN_TIMEOUT_SECS", "0");
+        assert_eq!(drain_timeout(), Duration::from_secs(30));
+        g.set("BOLT_DRAIN_TIMEOUT_SECS", "not-a-u64");
+        assert_eq!(drain_timeout(), Duration::from_secs(30));
+    }
+}
