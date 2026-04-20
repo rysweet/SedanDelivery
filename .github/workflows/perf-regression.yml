@@ -117,6 +117,9 @@ jobs:
             "sedan-cypher-embedded::embedded_bench"
             "sedan-gql-embedded::embedded_bench"
             "sedan-gremlin-embedded::embedded_bench"
+            "embedded-bench::cypher_bench"
+            "embedded-bench::gql_bench"
+            "embedded-bench::gremlin_bench"
           )
           for spec in "${benches[@]}"; do
             pkg="${spec%%::*}"

@@ -15,6 +15,7 @@ members = [
     "sedan-cypher-embedded",
     "sedan-gremlin-embedded",
     "tests/loadtest",
+    "tests/embedded-bench",
     "tests/embedded-fuzz",
     "tests/gremlin-tck",
     "tests/bolt-driver-conformance",

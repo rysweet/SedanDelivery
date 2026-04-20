@@ -46,6 +46,9 @@ DEFAULT_BENCH_SPECS=(
   "sedan-cypher-embedded::embedded_bench"
   "sedan-gql-embedded::embedded_bench"
   "sedan-gremlin-embedded::embedded_bench"
+  "embedded-bench::cypher_bench"
+  "embedded-bench::gql_bench"
+  "embedded-bench::gremlin_bench"
 )
 if [[ -n "${BENCH_SPECS:-}" ]]; then
   read -r -a BENCH_SPECS_ARR <<< "$BENCH_SPECS"

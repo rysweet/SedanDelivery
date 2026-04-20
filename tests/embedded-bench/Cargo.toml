@@ -1,0 +1,33 @@
+[package]
+name        = "embedded-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Reliability bench suite — apples-to-apples micro-benchmarks for the embedded engines"
+publish     = false
+
+[lib]
+path = "src/lib.rs"
+bench = false
+
+[dependencies]
+cypher-core           = { path = "../../cypher-core" }
+indexmap              = { workspace = true }
+
+[dev-dependencies]
+criterion             = { workspace = true }
+sedan-cypher-embedded = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded    = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+
+[[bench]]
+name    = "cypher_bench"
+harness = false
+
+[[bench]]
+name    = "gql_bench"
+harness = false
+
+[[bench]]
+name    = "gremlin_bench"
+harness = false
