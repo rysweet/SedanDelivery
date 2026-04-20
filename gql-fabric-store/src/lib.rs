@@ -62,6 +62,10 @@ pub struct FabricGraphStore {
     pub(crate) refresh_lock: Mutex<()>,
     /// Cached HTTP agent with timeout — avoids per-call TLS churn.
     pub(crate) agent: ureq::Agent,
+    /// Optional override for the OAuth token endpoint. When `None`, the
+    /// production Azure AD URL is used. Set via [`FabricGraphStore::with_token_url`]
+    /// for tests that need to redirect the token fetch to a mock server.
+    pub(crate) token_url_override: Option<String>,
 }
 
 /// Newtype wrapper around `String` whose `Debug` impl redacts the value,
@@ -116,7 +120,16 @@ impl FabricGraphStore {
                 )))
                 .build()
                 .new_agent(),
+            token_url_override: None,
         }
+    }
+
+    /// Override the OAuth token endpoint URL. Intended for tests that need
+    /// to redirect the token fetch to a mock HTTP server.
+    #[doc(hidden)]
+    pub fn with_token_url(mut self, url: String) -> Self {
+        self.token_url_override = Some(url);
+        self
     }
 
     /// Construct from environment variables (GQL_FABRIC_*).

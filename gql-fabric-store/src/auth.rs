@@ -51,10 +51,12 @@ impl FabricGraphStore {
         }
 
         // Fetch a new token (only one thread reaches here at a time).
-        let url = format!(
-            "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
-            self.tenant_id
-        );
+        let url = self.token_url_override.clone().unwrap_or_else(|| {
+            format!(
+                "https://login.microsoftonline.com/{}/oauth2/v2.0/token",
+                self.tenant_id
+            )
+        });
         let body = format!(
             "grant_type=client_credentials&client_id={}&client_secret={}&scope=https%3A%2F%2Fapi.fabric.microsoft.com%2F.default",
             urlenc(&self.client_id),
