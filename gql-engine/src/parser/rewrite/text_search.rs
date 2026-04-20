@@ -121,4 +121,64 @@ mod word_boundary_regression {
         assert!(!contains_match_modifier_ci("MATCHALL (p)", "ALL"));
         assert!(!contains_match_modifier_ci("MATCHED ANY (p)", "ANY"));
     }
+
+    // ── Coverage uplift: edge cases for text_search helpers ──────────────
+
+    #[test]
+    fn phrase_ci_empty_phrase_returns_false() {
+        // All-whitespace / empty phrases split into zero words -> early false.
+        assert!(!contains_phrase_ci("MATCH ANY SHORTEST", ""));
+        assert!(!contains_phrase_ci("MATCH ANY SHORTEST", "   "));
+        assert!(!contains_phrase_ci("", ""));
+    }
+
+    #[test]
+    fn phrase_ci_first_word_longer_than_haystack_returns_false() {
+        assert!(!contains_phrase_ci("abc", "LOOOOOOOONGWORD"));
+        assert!(!contains_phrase_ci("", "WORD"));
+    }
+
+    #[test]
+    fn phrase_ci_second_word_missing_returns_false() {
+        // First word matches at end of haystack but second word cannot follow.
+        assert!(!contains_phrase_ci("MATCH ANY", "ANY SHORTEST"));
+        assert!(!contains_phrase_ci("MATCH ANY OTHER", "ANY SHORTEST"));
+    }
+
+    #[test]
+    fn phrase_ci_matches_three_word_phrase() {
+        assert!(contains_phrase_ci(
+            "select ALL   SHORTEST PATH from p",
+            "ALL SHORTEST PATH"
+        ));
+    }
+
+    #[test]
+    fn match_modifier_ci_src_shorter_than_match_keyword() {
+        // Source too short to possibly contain "MATCH" -> early false.
+        assert!(!contains_match_modifier_ci("M", "ANY"));
+        assert!(!contains_match_modifier_ci("", "ANY"));
+        assert!(!contains_match_modifier_ci("MATC", "ANY"));
+    }
+
+    #[test]
+    fn match_modifier_ci_keyword_followed_by_alphanumeric_skipped() {
+        // "MATCH ANYTHING" must not match modifier "ANY".
+        assert!(!contains_match_modifier_ci("MATCH ANYTHING (p)", "ANY"));
+        assert!(!contains_match_modifier_ci("MATCH ALLEY (p)", "ALL"));
+    }
+
+    #[test]
+    fn match_modifier_ci_keyword_at_end_of_source() {
+        // Trailing keyword with no following char is still a word-boundary match.
+        assert!(contains_match_modifier_ci("MATCH ANY", "ANY"));
+        assert!(contains_match_modifier_ci("match all", "ALL"));
+    }
+
+    #[test]
+    fn match_modifier_ci_keyword_too_short_in_tail() {
+        // After MATCH, tail is shorter than the keyword -> cannot match.
+        assert!(!contains_match_modifier_ci("MATCH A", "ANY"));
+        assert!(!contains_match_modifier_ci("MATCH  ", "ANY"));
+    }
 }
