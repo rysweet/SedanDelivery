@@ -17,6 +17,7 @@ members = [
     "tests/loadtest",
     "tests/embedded-bench",
     "tests/embedded-fuzz",
+    "tests/bolt-fuzz",
     "tests/concurrent-stress",
     "tests/gremlin-tck",
     "tests/bolt-driver-conformance",

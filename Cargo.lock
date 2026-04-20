@@ -388,6 +388,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "bolt-fuzz"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "sedandelivery-bolt",
+]
+
+[[package]]
 name = "borsh"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
