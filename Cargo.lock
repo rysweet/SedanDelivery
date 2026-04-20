@@ -620,6 +620,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "concurrent-stress"
+version = "0.1.0"
+dependencies = [
+ "cypher-core",
+ "indexmap",
+ "sedan-cypher-embedded",
+ "sedan-gql-embedded",
+ "sedan-gremlin-embedded",
+]
+
+[[package]]
 name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

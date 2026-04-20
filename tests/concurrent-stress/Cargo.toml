@@ -1,0 +1,19 @@
+[package]
+name        = "concurrent-stress"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Concurrent stress harness — hammers the embedded engines from N reader + M writer threads against a shared store."
+publish     = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cypher-core            = { path = "../../cypher-core" }
+indexmap               = { workspace = true }
+sedan-cypher-embedded  = { path = "../../sedan-cypher-embedded" }
+sedan-gql-embedded     = { path = "../../sedan-gql-embedded" }
+sedan-gremlin-embedded = { path = "../../sedan-gremlin-embedded" }
+
+[dev-dependencies]
