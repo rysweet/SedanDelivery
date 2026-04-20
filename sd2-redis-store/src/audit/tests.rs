@@ -121,3 +121,57 @@ fn audit_report_preserves_repair_flag_false() {
         "repair=false must be preserved in the report even when stale members are detected"
     );
 }
+
+// ── Mock-backed entry-point tests for `audit_graph_metadata` ──────────────
+//
+// These tests exercise the early branches of `audit_graph_metadata` (graph
+// name validation and the initial pool checkout) using the
+// `RedisGraphStore::new_for_testing()` store. The deeper repair path that
+// requires SCAN/SREM round-trips is covered by the live-Redis integration
+// tests in `sd2-redis-store/tests/metadata_audit.rs`.
+
+use crate::RedisGraphStore;
+use cypher_core::error::StorageError;
+
+#[test]
+fn audit_graph_metadata_rejects_invalid_graph_name() {
+    let store = RedisGraphStore::new_for_testing();
+    // Brace characters are reserved as Redis Cluster hash-tags.
+    let r = store.audit_graph_metadata("bad{name}", false);
+    assert!(
+        matches!(r, Err(StorageError::InvalidGraphName { .. })),
+        "expected InvalidGraphName, got {r:?}"
+    );
+}
+
+#[test]
+fn audit_graph_metadata_rejects_empty_graph_name() {
+    let store = RedisGraphStore::new_for_testing();
+    let r = store.audit_graph_metadata("", false);
+    assert!(
+        matches!(r, Err(StorageError::InvalidGraphName { .. })),
+        "expected InvalidGraphName for empty name, got {r:?}"
+    );
+}
+
+#[test]
+fn audit_graph_metadata_propagates_backend_error_for_valid_name() {
+    let store = RedisGraphStore::new_for_testing();
+    // Validation passes; the unreachable pool surfaces a Backend error
+    // when audit_graph_metadata calls `self.conn()`.
+    let r = store.audit_graph_metadata("validgraph", false);
+    assert!(
+        matches!(r, Err(StorageError::Backend { .. })),
+        "expected Backend, got {r:?}"
+    );
+}
+
+#[test]
+fn audit_graph_metadata_with_repair_propagates_backend_error_for_valid_name() {
+    let store = RedisGraphStore::new_for_testing();
+    let r = store.audit_graph_metadata("validgraph", true);
+    assert!(
+        matches!(r, Err(StorageError::Backend { .. })),
+        "expected Backend (repair=true), got {r:?}"
+    );
+}

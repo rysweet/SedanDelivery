@@ -292,3 +292,481 @@ impl GraphStore for RedisGraphStore {
     // snapshot is needed. Redis Cluster mode can add WATCH/MULTI/EXEC
     // for per-slot transaction isolation in a future iteration.
 }
+
+#[cfg(test)]
+mod tests {
+    //! Trait-level smoke tests for the `GraphStore` impl on `RedisGraphStore`.
+    //!
+    //! Each test invokes a trait method on a `new_for_testing()` store whose
+    //! pool points at an unreachable URL. The expected outcome is therefore:
+    //!
+    //! - For methods that never touch the connection (validation rejects the
+    //!   input, or empty inputs short-circuit): the appropriate validation
+    //!   error / `Ok` empty value.
+    //! - For all other methods: a `Backend` error from the first pool checkout.
+    //!
+    //! The goal is to exercise the trait wiring in `graph_store_impl.rs`
+    //! plus the entry of every `_impl` helper without requiring a live Redis.
+    //! Functional behaviour with a real Redis is covered by the integration
+    //! tests under `tests/`.
+    use super::*;
+    use cypher_core::storage::{EdgeId, NodeId, RangeQuery, ReadConsistency};
+    use indexmap::IndexMap;
+
+    fn store() -> RedisGraphStore {
+        RedisGraphStore::new_for_testing()
+    }
+
+    fn assert_backend<T: std::fmt::Debug>(r: Result<T, StorageError>, ctx: &str) {
+        match r {
+            Err(StorageError::Backend { .. }) => {}
+            other => panic!("{ctx}: expected Backend error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_node_propagates_backend_error() {
+        assert_backend(store().get_node("g", NodeId(1)), "get_node");
+    }
+
+    #[test]
+    fn get_edge_propagates_backend_error() {
+        assert_backend(store().get_edge("g", EdgeId(1)), "get_edge");
+    }
+
+    #[test]
+    fn get_nodes_batch_propagates_backend_error() {
+        assert_backend(
+            store().get_nodes_batch("g", &[NodeId(1)]),
+            "get_nodes_batch",
+        );
+    }
+
+    #[test]
+    fn get_nodes_batch_propagates_backend_error_even_for_empty_input() {
+        // get_nodes_batch checks out a connection before short-circuiting on
+        // empty IDs, so even an empty batch surfaces a Backend error here.
+        assert_backend(store().get_nodes_batch("g", &[]), "get_nodes_batch empty");
+    }
+
+    #[test]
+    fn get_edges_batch_propagates_backend_error() {
+        assert_backend(
+            store().get_edges_batch("g", &[EdgeId(1)]),
+            "get_edges_batch",
+        );
+    }
+
+    #[test]
+    fn get_edges_batch_propagates_backend_error_even_for_empty_input() {
+        assert_backend(store().get_edges_batch("g", &[]), "get_edges_batch empty");
+    }
+
+    #[test]
+    fn find_nodes_by_label_propagates_backend_error() {
+        assert_backend(store().find_nodes_by_label("g", "L"), "find_nodes_by_label");
+    }
+
+    #[test]
+    fn find_nodes_by_label_and_property_propagates_backend_error() {
+        let v = Value::Int(42);
+        let r = store().find_nodes_by_label_and_property("g", "L", "p", RangeQuery::Eq(&v));
+        assert_backend(r, "find_nodes_by_label_and_property");
+    }
+
+    #[test]
+    fn find_edges_by_type_propagates_backend_error() {
+        assert_backend(store().find_edges_by_type("g", "R"), "find_edges_by_type");
+    }
+
+    #[test]
+    fn out_edges_propagates_backend_error() {
+        assert_backend(store().out_edges("g", NodeId(1)), "out_edges");
+    }
+
+    #[test]
+    fn in_edges_propagates_backend_error() {
+        assert_backend(store().in_edges("g", NodeId(1)), "in_edges");
+    }
+
+    #[test]
+    fn out_edges_by_type_propagates_backend_error() {
+        assert_backend(
+            store().out_edges_by_type("g", NodeId(1), &["R"]),
+            "out_edges_by_type",
+        );
+    }
+
+    #[test]
+    fn in_edges_by_type_propagates_backend_error() {
+        assert_backend(
+            store().in_edges_by_type("g", NodeId(1), &["R"]),
+            "in_edges_by_type",
+        );
+    }
+
+    #[test]
+    fn out_edges_by_type_batch_propagates_backend_error() {
+        assert_backend(
+            store().out_edges_by_type_batch("g", &[NodeId(1)], &["R"]),
+            "out_edges_by_type_batch",
+        );
+    }
+
+    #[test]
+    fn in_edges_by_type_batch_propagates_backend_error() {
+        assert_backend(
+            store().in_edges_by_type_batch("g", &[NodeId(1)], &["R"]),
+            "in_edges_by_type_batch",
+        );
+    }
+
+    #[test]
+    fn out_edge_ids_propagates_backend_error() {
+        assert_backend(store().out_edge_ids("g", NodeId(1)), "out_edge_ids");
+    }
+
+    #[test]
+    fn in_edge_ids_propagates_backend_error() {
+        assert_backend(store().in_edge_ids("g", NodeId(1)), "in_edge_ids");
+    }
+
+    #[test]
+    fn all_node_ids_propagates_backend_error() {
+        assert_backend(store().all_node_ids("g"), "all_node_ids");
+    }
+
+    #[test]
+    fn all_edge_ids_propagates_backend_error() {
+        assert_backend(store().all_edge_ids("g"), "all_edge_ids");
+    }
+
+    #[test]
+    fn all_label_names_propagates_backend_error() {
+        assert_backend(store().all_label_names("g"), "all_label_names");
+    }
+
+    #[test]
+    fn create_node_propagates_backend_error_after_validation() {
+        // Valid labels + props pass validation, then with_write_lock fails
+        // at pool checkout. This exercises both the validation success path
+        // and the lock entry.
+        let r = store().create_node("g", vec!["L".to_string()], IndexMap::new());
+        assert_backend(r, "create_node");
+    }
+
+    #[test]
+    fn create_node_rejects_label_with_null_byte_before_touching_conn() {
+        let r = store().create_node("g", vec!["bad\x00label".to_string()], IndexMap::new());
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn batch_create_nodes_empty_short_circuits_to_empty_vec() {
+        let out = store()
+            .batch_create_nodes("g", Vec::new())
+            .expect("empty batch must short-circuit");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn batch_create_nodes_propagates_backend_error_after_validation() {
+        let nodes = vec![(vec!["L".to_string()], IndexMap::new())];
+        assert_backend(store().batch_create_nodes("g", nodes), "batch_create_nodes");
+    }
+
+    #[test]
+    fn batch_create_nodes_rejects_invalid_labels_before_touching_conn() {
+        let nodes = vec![(vec!["bad\x00label".to_string()], IndexMap::new())];
+        let r = store().batch_create_nodes("g", nodes);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn batch_create_nodes_rejects_negative_injected_id_before_touching_conn() {
+        // `extract_injected_id` rejects negative `_sd2_id` values with a
+        // Backend error before any pool checkout.
+        let mut props = IndexMap::new();
+        props.insert("_sd2_id".to_string(), Value::Int(-1));
+        let nodes = vec![(vec!["L".to_string()], props)];
+        let r = store().batch_create_nodes("g", nodes);
+        assert!(
+            matches!(r, Err(StorageError::Backend { .. })),
+            "expected Backend, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn create_node_rejects_negative_injected_id_before_touching_conn() {
+        // Wait — actually this validates only inside with_graph_write_lock,
+        // so it surfaces a Backend error from the unreachable pool first.
+        // The negative-id check lives behind the write lock acquisition.
+        let mut props = IndexMap::new();
+        props.insert("_sd2_id".to_string(), Value::Int(-1));
+        let r = store().create_node("g", vec!["L".to_string()], props);
+        assert_backend(r, "create_node with negative _sd2_id");
+    }
+
+    #[test]
+    fn create_edge_rejects_negative_injected_id_before_touching_conn() {
+        let mut props = IndexMap::new();
+        props.insert("_sd2_eid".to_string(), Value::Int(-5));
+        let r = store().create_edge("g", NodeId(1), NodeId(2), "R".to_string(), props);
+        assert_backend(r, "create_edge with negative _sd2_eid");
+    }
+
+    #[test]
+    fn batch_create_edges_with_injected_eid_falls_back_to_single_path() {
+        // When at least one edge carries an `_sd2_eid`, the entire batch
+        // routes through the single-edge `create_edge_impl` path, which
+        // fails at the pool checkout against the unreachable test URL.
+        let mut props = IndexMap::new();
+        props.insert("_sd2_eid".to_string(), Value::Int(7));
+        let edges = vec![(NodeId(1), NodeId(2), "R".to_string(), props)];
+        assert_backend(
+            store().batch_create_edges("g", edges),
+            "batch_create_edges with _sd2_eid",
+        );
+    }
+
+    #[test]
+    fn create_edge_propagates_backend_error_after_validation() {
+        let r = store().create_edge("g", NodeId(1), NodeId(2), "R".to_string(), IndexMap::new());
+        assert_backend(r, "create_edge");
+    }
+
+    #[test]
+    fn create_edge_rejects_property_key_with_null_byte_before_touching_conn() {
+        let mut props = IndexMap::new();
+        props.insert("bad\x00key".to_string(), Value::Int(1));
+        let r = store().create_edge("g", NodeId(1), NodeId(2), "R".to_string(), props);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn batch_create_edges_empty_short_circuits_to_empty_vec() {
+        let out = store()
+            .batch_create_edges("g", Vec::new())
+            .expect("empty batch must short-circuit");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn batch_create_edges_propagates_backend_error_after_validation() {
+        let edges = vec![(NodeId(1), NodeId(2), "R".to_string(), IndexMap::new())];
+        assert_backend(store().batch_create_edges("g", edges), "batch_create_edges");
+    }
+
+    #[test]
+    fn batch_create_edges_rejects_invalid_property_keys_before_touching_conn() {
+        let mut props = IndexMap::new();
+        props.insert("bad\x00key".to_string(), Value::Int(1));
+        let edges = vec![(NodeId(1), NodeId(2), "R".to_string(), props)];
+        let r = store().batch_create_edges("g", edges);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn set_node_properties_propagates_backend_error_after_validation() {
+        let r = store().set_node_properties("g", NodeId(1), IndexMap::new());
+        assert_backend(r, "set_node_properties");
+    }
+
+    #[test]
+    fn set_node_properties_rejects_invalid_keys_before_touching_conn() {
+        let mut props = IndexMap::new();
+        props.insert("bad\x00key".to_string(), Value::Int(1));
+        let r = store().set_node_properties("g", NodeId(1), props);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn replace_node_properties_propagates_backend_error_after_validation() {
+        let r = store().replace_node_properties("g", NodeId(1), IndexMap::new());
+        assert_backend(r, "replace_node_properties");
+    }
+
+    #[test]
+    fn replace_node_properties_rejects_invalid_keys_before_touching_conn() {
+        let mut props = IndexMap::new();
+        props.insert("bad\x00key".to_string(), Value::Int(1));
+        let r = store().replace_node_properties("g", NodeId(1), props);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn set_edge_properties_propagates_backend_error_after_validation() {
+        let r = store().set_edge_properties("g", EdgeId(1), IndexMap::new());
+        assert_backend(r, "set_edge_properties");
+    }
+
+    #[test]
+    fn set_edge_properties_rejects_invalid_keys_before_touching_conn() {
+        let mut props = IndexMap::new();
+        props.insert("bad\x00key".to_string(), Value::Int(1));
+        let r = store().set_edge_properties("g", EdgeId(1), props);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn replace_edge_properties_propagates_backend_error_after_validation() {
+        let r = store().replace_edge_properties("g", EdgeId(1), IndexMap::new());
+        assert_backend(r, "replace_edge_properties");
+    }
+
+    #[test]
+    fn replace_edge_properties_rejects_invalid_keys_before_touching_conn() {
+        let mut props = IndexMap::new();
+        props.insert("bad\x00key".to_string(), Value::Int(1));
+        let r = store().replace_edge_properties("g", EdgeId(1), props);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn remove_node_property_propagates_backend_error_after_validation() {
+        assert_backend(
+            store().remove_node_property("g", NodeId(1), "name"),
+            "remove_node_property",
+        );
+    }
+
+    #[test]
+    fn remove_node_property_rejects_empty_key_before_touching_conn() {
+        let r = store().remove_node_property("g", NodeId(1), "");
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn remove_edge_property_propagates_backend_error_after_validation() {
+        assert_backend(
+            store().remove_edge_property("g", EdgeId(1), "name"),
+            "remove_edge_property",
+        );
+    }
+
+    #[test]
+    fn remove_edge_property_rejects_empty_key_before_touching_conn() {
+        let r = store().remove_edge_property("g", EdgeId(1), "");
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn add_node_labels_propagates_backend_error_after_validation() {
+        let labels = vec!["L".to_string()];
+        assert_backend(
+            store().add_node_labels("g", NodeId(1), &labels),
+            "add_node_labels",
+        );
+    }
+
+    #[test]
+    fn add_node_labels_rejects_invalid_labels_before_touching_conn() {
+        let labels = vec!["bad\x00label".to_string()];
+        let r = store().add_node_labels("g", NodeId(1), &labels);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn remove_node_labels_propagates_backend_error_after_validation() {
+        let labels = vec!["L".to_string()];
+        assert_backend(
+            store().remove_node_labels("g", NodeId(1), &labels),
+            "remove_node_labels",
+        );
+    }
+
+    #[test]
+    fn remove_node_labels_rejects_invalid_labels_before_touching_conn() {
+        let labels = vec!["bad\x00label".to_string()];
+        let r = store().remove_node_labels("g", NodeId(1), &labels);
+        assert!(matches!(r, Err(StorageError::ConstraintViolation { .. })));
+    }
+
+    #[test]
+    fn delete_node_propagates_backend_error() {
+        assert_backend(store().delete_node("g", NodeId(1), false), "delete_node");
+    }
+
+    #[test]
+    fn delete_node_with_detach_propagates_backend_error() {
+        assert_backend(
+            store().delete_node("g", NodeId(1), true),
+            "delete_node detach",
+        );
+    }
+
+    #[test]
+    fn delete_edge_propagates_backend_error() {
+        assert_backend(store().delete_edge("g", EdgeId(1)), "delete_edge");
+    }
+
+    #[test]
+    fn list_indexes_propagates_backend_error() {
+        assert_backend(store().list_indexes("g"), "list_indexes");
+    }
+
+    #[test]
+    fn create_index_propagates_backend_error() {
+        assert_backend(store().create_index("g", "L", "p"), "create_index");
+    }
+
+    #[test]
+    fn drop_index_propagates_backend_error() {
+        assert_backend(store().drop_index("g", "L", "p"), "drop_index");
+    }
+
+    #[test]
+    fn create_graph_propagates_backend_error_for_valid_name() {
+        // A valid graph name passes validation, so the failure surfaces from
+        // the with_graph_write_lock pool checkout.
+        assert_backend(store().create_graph("validgraphname"), "create_graph");
+    }
+
+    #[test]
+    fn create_graph_rejects_invalid_name_before_touching_conn() {
+        // Brace characters are reserved for cluster hash-tags and rejected by
+        // validate_graph_name with InvalidGraphName.
+        let r = store().create_graph("bad{name}");
+        assert!(
+            matches!(r, Err(StorageError::InvalidGraphName { .. })),
+            "expected InvalidGraphName for invalid graph name, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn delete_graph_propagates_backend_error() {
+        assert_backend(store().delete_graph("validgraphname"), "delete_graph");
+    }
+
+    #[test]
+    fn graph_exists_propagates_backend_error() {
+        assert_backend(store().graph_exists("g"), "graph_exists");
+    }
+
+    #[test]
+    fn list_graphs_propagates_backend_error() {
+        assert_backend(store().list_graphs(), "list_graphs");
+    }
+
+    #[test]
+    fn graph_stats_propagates_backend_error() {
+        assert_backend(store().graph_stats("g"), "graph_stats");
+    }
+
+    #[test]
+    fn with_read_consistency_returns_a_distinct_store_view() {
+        let s = store();
+        let view = GraphStore::with_read_consistency(&s, ReadConsistency::SessionFreshPrimary)
+            .expect("with_read_consistency must return Some");
+        // The new view is wired into the trait (no panic) and its concrete
+        // type is RedisGraphStore.
+        assert!(view.as_any().downcast_ref::<RedisGraphStore>().is_some());
+    }
+
+    #[test]
+    fn as_any_downcasts_to_redis_graph_store() {
+        let s = store();
+        let any = s.as_any();
+        assert!(any.downcast_ref::<RedisGraphStore>().is_some());
+    }
+}
