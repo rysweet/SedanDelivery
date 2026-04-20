@@ -281,14 +281,101 @@ fn recovery_truncate_to_record_boundary_yields_prefix() {
     // destruction, both of which are implicitly checked.
 }
 
-// ── 4. Duplicate replay: replaying the same WAL twice is deterministic ───────
+// ── 4. Duplicate replay: replaying the same WAL N times is idempotent ───────
 //
-// We treat "replay the same WAL twice" as: open two independent fresh stores
-// from the same on-disk WAL bytes, observe identical state. This pins
-// determinism of the recovery codepath.
+// Two flavors of the "same WAL replayed multiple times" guarantee (#1701):
+//
+//  (a) `recovery_same_wal_replayed_n_times_is_stable` — in-place replay: we
+//      take an already-recovered `PersistentGraphStore` and call its public
+//      `replay_wal_from` API N times against its own on-disk WAL. The final
+//      observable state must equal the state after a single recovery.
+//
+//  (b) `recovery_duplicate_replay_two_stores_produce_identical_state` — two
+//      independent stores opened from byte-identical on-disk WALs expose
+//      identical content.
 
 #[test]
-fn recovery_duplicate_replay_is_deterministic() {
+fn recovery_same_wal_replayed_n_times_is_stable() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Build a WAL with a representative mix of operations (creates, mutates,
+    // delete, edge, index). Then drop to flush.
+    {
+        let store = PersistentGraphStore::open(cfg(dir.path())).unwrap();
+        store.create_graph("g").unwrap();
+        let ids = write_n(&store, "g", 6);
+        let mut update = IndexMap::new();
+        update.insert("touched".into(), Value::Bool(true));
+        store.set_node_properties("g", ids[0], update).unwrap();
+        store
+            .add_node_labels("g", ids[1], &["Special".to_string()])
+            .unwrap();
+        store.delete_node("g", ids[2], true).unwrap();
+        store
+            .create_edge("g", ids[3], ids[4], "REL".to_string(), IndexMap::new())
+            .unwrap();
+        store.create_index("g", "Item", "idx").unwrap();
+    }
+
+    // Baseline: open fresh, capture observable state after a single replay.
+    let store = PersistentGraphStore::open(cfg(dir.path())).unwrap();
+    let wal_path = dir.path().join("wal.jsonl");
+
+    let baseline_stats = store.graph_stats("g").unwrap();
+    let baseline_graphs = store.list_graphs().unwrap();
+    let baseline_indexes = store.list_indexes("g").unwrap();
+    let baseline_node_ids: Vec<NodeId> = (1..=6)
+        .map(NodeId)
+        .filter(|id| store.get_node("g", *id).unwrap().is_some())
+        .collect();
+    let baseline_node_snapshots: Vec<_> = baseline_node_ids
+        .iter()
+        .map(|id| store.get_node("g", *id).unwrap().unwrap())
+        .collect();
+
+    // Re-apply the same WAL N more times. The new API surface (#1701)
+    // guarantees this converges to the baseline state rather than panicking
+    // or duplicating work.
+    for cycle in 0..4 {
+        store
+            .replay_wal_from(&wal_path)
+            .unwrap_or_else(|e| panic!("in-place replay failed at cycle {cycle}: {e}"));
+
+        let stats = store.graph_stats("g").unwrap();
+        assert_eq!(
+            stats.node_count,
+            baseline_stats.node_count,
+            "node_count drifted after {} extra replay(s)",
+            cycle + 1
+        );
+        assert_eq!(
+            stats.edge_count,
+            baseline_stats.edge_count,
+            "edge_count drifted after {} extra replay(s)",
+            cycle + 1
+        );
+        assert_eq!(store.list_graphs().unwrap(), baseline_graphs);
+        assert_eq!(store.list_indexes("g").unwrap(), baseline_indexes);
+
+        for (id, expected) in baseline_node_ids.iter().zip(&baseline_node_snapshots) {
+            let actual = store
+                .get_node("g", *id)
+                .unwrap()
+                .unwrap_or_else(|| panic!("node {id:?} vanished at cycle {cycle}"));
+            assert_eq!(actual.labels, expected.labels);
+            assert_eq!(actual.properties, expected.properties);
+        }
+
+        // Deleted node stays deleted across replays.
+        assert!(
+            store.get_node("g", NodeId(3)).unwrap().is_none(),
+            "deleted node re-appeared at cycle {cycle}"
+        );
+    }
+}
+
+#[test]
+fn recovery_duplicate_replay_two_stores_produce_identical_state() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
     const N: i64 = 8;
@@ -298,31 +385,27 @@ fn recovery_duplicate_replay_is_deterministic() {
         let store = PersistentGraphStore::open(cfg(dir_a.path())).unwrap();
         store.create_graph("g").unwrap();
         let ids = write_n(&store, "g", N);
-        // Mutate one
         let mut update = IndexMap::new();
         update.insert("touched".into(), Value::Bool(true));
         store.set_node_properties("g", ids[0], update).unwrap();
-        // Add a label
         store
             .add_node_labels("g", ids[1], &["Special".to_string()])
             .unwrap();
-        // Delete one
         store.delete_node("g", ids[2], true).unwrap();
-        // Edge between two survivors
         store
             .create_edge("g", ids[3], ids[4], "REL".to_string(), IndexMap::new())
             .unwrap();
-        // Index
         store.create_index("g", "Item", "idx").unwrap();
     }
 
-    // Copy the WAL to a fresh directory and re-open both.
+    // Copy the WAL (and snapshot, if any) to a fresh directory and re-open
+    // both. This exercises the "open a SECOND store from the same WAL"
+    // scenario called out in issue #1701.
     fs::copy(
         dir_a.path().join("wal.jsonl"),
         dir_b.path().join("wal.jsonl"),
     )
     .unwrap();
-
     let snap_a = dir_a.path().join("snapshot.json");
     if snap_a.exists() {
         fs::copy(&snap_a, dir_b.path().join("snapshot.json")).unwrap();
@@ -341,17 +424,23 @@ fn recovery_duplicate_replay_is_deterministic() {
         store_b.list_graphs().unwrap()
     );
     assert_eq!(
-        store_a.list_indexes("g").unwrap().len(),
-        store_b.list_indexes("g").unwrap().len()
+        store_a.list_indexes("g").unwrap(),
+        store_b.list_indexes("g").unwrap()
     );
 
-    // Spot-check a node's projection.
-    let id1 = NodeId(1);
-    let na = store_a.get_node("g", id1).unwrap().unwrap();
-    let nb = store_b.get_node("g", id1).unwrap().unwrap();
-    assert_eq!(na.labels, nb.labels);
-    assert_eq!(na.properties["touched"], Value::Bool(true));
-    assert_eq!(nb.properties["touched"], Value::Bool(true));
+    // Node-level projection must be byte-identical.
+    for id in 1..=(N as u64) {
+        let nid = NodeId(id);
+        assert_eq!(
+            store_a.get_node("g", nid).unwrap(),
+            store_b.get_node("g", nid).unwrap(),
+            "node {id} diverged across duplicate-replay",
+        );
+    }
+
+    // Spot-check the mutated node.
+    let n1_a = store_a.get_node("g", NodeId(1)).unwrap().unwrap();
+    assert_eq!(n1_a.properties["touched"], Value::Bool(true));
 
     // Deleted node must be absent in both.
     assert!(store_a.get_node("g", NodeId(3)).unwrap().is_none());

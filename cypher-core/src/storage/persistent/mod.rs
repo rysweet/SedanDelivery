@@ -185,6 +185,21 @@ impl PersistentGraphStore {
         snapshot::truncate_wal(&self.config.data_dir, &self.wal)?;
         Ok(())
     }
+
+    /// Replay an on-disk WAL file into this store in place.
+    ///
+    /// Normally the WAL is replayed once during [`open`](Self::open) and then
+    /// appended to for the lifetime of the store. This entry point lets
+    /// callers re-apply an arbitrary WAL file (typically the store's own)
+    /// against the already-recovered state.
+    ///
+    /// Replay is **idempotent**: the same WAL file can be replayed any number
+    /// of times and the observable state converges to the final state of a
+    /// single cold-start replay. See issue #1701 and the module-level docs of
+    /// `replay` for the full contract.
+    pub fn replay_wal_from(&self, path: &std::path::Path) -> Result<(), StorageError> {
+        replay::replay_file(&self.inner, path)
+    }
 }
 
 impl Drop for PersistentGraphStore {

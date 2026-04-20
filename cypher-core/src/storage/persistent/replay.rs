@@ -1,8 +1,24 @@
 //! WAL/snapshot replay logic.
 //!
-//! Replay reads JSON-line entries and re-applies them to a fresh
-//! [`InMemoryGraphStore`]. ID-allocating operations verify that the
-//! sequentially-allocated id matches the persisted id.
+//! Replay reads JSON-line entries and re-applies them to an
+//! [`InMemoryGraphStore`] using the persisted IDs verbatim. Every operation
+//! is made idempotent so that the same WAL stream can be replayed any number
+//! of times into the same store without error and without changing the final
+//! state.
+//!
+//! # Idempotency contract
+//!
+//! - `CreateNode` / `CreateEdge` use
+//!   [`InMemoryGraphStore::create_node_with_id`] /
+//!   [`InMemoryGraphStore::create_edge_with_id`]: the persisted ID is used
+//!   directly (no assertion against an auto-allocated ID), and a pre-existing
+//!   entity with that ID makes the operation a no-op.
+//! - `DeleteNode` / `DeleteEdge` and property/label mutations on absent
+//!   entities are treated as no-ops during replay.
+//! - All remaining operations (`CreateGraph`, `CreateIndex`, …) are already
+//!   idempotent via `*_exists` checks or the underlying store semantics.
+//!
+//! See issue #1701 and test `recovery_same_wal_replayed_n_times_is_stable`.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader};
@@ -14,6 +30,10 @@ use crate::storage::mem::InMemoryGraphStore;
 use crate::storage::{EdgeId, GraphStore, NodeId};
 
 /// Replay a file of JSON-line entries into an [`InMemoryGraphStore`].
+///
+/// Every entry is applied idempotently — see the module-level docs for the
+/// full contract. Replaying the same file N times is guaranteed to converge
+/// on a single state.
 ///
 /// This is the **strict** replay path used for snapshot files: every line must
 /// parse, and any parse error returns [`StorageError::Serialization`]. Snapshots
@@ -131,6 +151,18 @@ pub(super) fn replay_wal_file(store: &InMemoryGraphStore, path: &Path) -> Result
 }
 
 fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), StorageError> {
+    /// Replay helper: treat `NodeNotFound` / `EdgeNotFound` as a no-op.
+    ///
+    /// Making non-create mutations tolerant to missing targets is what allows
+    /// the same WAL to be replayed on top of itself (issue #1701): after one
+    /// replay a deleted node stays deleted, and a second pass that re-issues
+    /// the delete must not fail.
+    fn skip_if_not_found(r: Result<(), StorageError>) -> Result<(), StorageError> {
+        match r {
+            Err(StorageError::NodeNotFound { .. } | StorageError::EdgeNotFound { .. }) => Ok(()),
+            other => other,
+        }
+    }
     match entry {
         WalEntry::CreateGraph { name } => {
             // Idempotent: skip if already exists (snapshot + WAL overlap).
@@ -147,18 +179,12 @@ fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), Stora
             graph,
             labels,
             properties,
-            id: expected_id,
+            id,
         } => {
             let props = json_to_props(properties);
-            let actual_id = store.create_node(&graph, labels, props)?;
-            if actual_id.0 != expected_id {
-                return Err(StorageError::Backend {
-                    msg: format!(
-                        "replay ID mismatch: expected node {expected_id}, got {}",
-                        actual_id.0
-                    ),
-                });
-            }
+            // Use the persisted ID verbatim. Idempotent: a pre-existing node
+            // with this ID makes this a no-op (see #1701).
+            store.create_node_with_id(&graph, NodeId(id), labels, props)?;
         }
         WalEntry::CreateEdge {
             graph,
@@ -166,18 +192,17 @@ fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), Stora
             dst,
             rel_type,
             properties,
-            id: expected_id,
+            id,
         } => {
             let props = json_to_props(properties);
-            let actual_id = store.create_edge(&graph, NodeId(src), NodeId(dst), rel_type, props)?;
-            if actual_id.0 != expected_id {
-                return Err(StorageError::Backend {
-                    msg: format!(
-                        "replay ID mismatch: expected edge {expected_id}, got {}",
-                        actual_id.0
-                    ),
-                });
-            }
+            store.create_edge_with_id(
+                &graph,
+                EdgeId(id),
+                NodeId(src),
+                NodeId(dst),
+                rel_type,
+                props,
+            )?;
         }
         WalEntry::SetNodeProperties {
             graph,
@@ -185,7 +210,7 @@ fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), Stora
             properties,
         } => {
             let props = json_to_props(properties);
-            store.set_node_properties(&graph, NodeId(id), props)?;
+            skip_if_not_found(store.set_node_properties(&graph, NodeId(id), props))?;
         }
         WalEntry::ReplaceNodeProperties {
             graph,
@@ -193,7 +218,7 @@ fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), Stora
             properties,
         } => {
             let props = json_to_props(properties);
-            store.replace_node_properties(&graph, NodeId(id), props)?;
+            skip_if_not_found(store.replace_node_properties(&graph, NodeId(id), props))?;
         }
         WalEntry::SetEdgeProperties {
             graph,
@@ -201,7 +226,7 @@ fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), Stora
             properties,
         } => {
             let props = json_to_props(properties);
-            store.set_edge_properties(&graph, EdgeId(id), props)?;
+            skip_if_not_found(store.set_edge_properties(&graph, EdgeId(id), props))?;
         }
         WalEntry::ReplaceEdgeProperties {
             graph,
@@ -209,25 +234,25 @@ fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), Stora
             properties,
         } => {
             let props = json_to_props(properties);
-            store.replace_edge_properties(&graph, EdgeId(id), props)?;
+            skip_if_not_found(store.replace_edge_properties(&graph, EdgeId(id), props))?;
         }
         WalEntry::DeleteNode { graph, id } => {
-            store.delete_node(&graph, NodeId(id), true)?;
+            skip_if_not_found(store.delete_node(&graph, NodeId(id), true))?;
         }
         WalEntry::DeleteEdge { graph, id } => {
-            store.delete_edge(&graph, EdgeId(id))?;
+            skip_if_not_found(store.delete_edge(&graph, EdgeId(id)))?;
         }
         WalEntry::AddNodeLabels { graph, id, labels } => {
-            store.add_node_labels(&graph, NodeId(id), &labels)?;
+            skip_if_not_found(store.add_node_labels(&graph, NodeId(id), &labels))?;
         }
         WalEntry::RemoveNodeLabels { graph, id, labels } => {
-            store.remove_node_labels(&graph, NodeId(id), &labels)?;
+            skip_if_not_found(store.remove_node_labels(&graph, NodeId(id), &labels))?;
         }
         WalEntry::RemoveNodeProperty { graph, id, key } => {
-            store.remove_node_property(&graph, NodeId(id), &key)?;
+            skip_if_not_found(store.remove_node_property(&graph, NodeId(id), &key))?;
         }
         WalEntry::RemoveEdgeProperty { graph, id, key } => {
-            store.remove_edge_property(&graph, EdgeId(id), &key)?;
+            skip_if_not_found(store.remove_edge_property(&graph, EdgeId(id), &key))?;
         }
         WalEntry::CreateIndex {
             graph,

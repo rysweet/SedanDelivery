@@ -14,7 +14,7 @@ mod properties;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use create::create_node_impl;
+pub(crate) use create::{create_node_impl, create_node_with_id_impl};
 pub(crate) use delete::delete_node_impl;
 pub(crate) use labels::{add_node_labels_impl, remove_node_labels_impl};
 pub(crate) use properties::{

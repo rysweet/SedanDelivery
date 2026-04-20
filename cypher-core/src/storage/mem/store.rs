@@ -42,6 +42,43 @@ impl InMemoryGraphStore {
         }
     }
 
+    /// Create a node with an explicit, caller-supplied [`NodeId`].
+    ///
+    /// Unlike [`GraphStore::create_node`], this bypasses the per-graph ID
+    /// allocator and uses `id` verbatim; the internal seq counter is advanced
+    /// past `id` so subsequent auto-allocated IDs will not collide.
+    ///
+    /// Idempotent: if a node with `id` already exists in `graph`, this is a
+    /// no-op. This is the primitive used by WAL replay to achieve in-place
+    /// idempotency (issue #1701).
+    ///
+    /// [`GraphStore::create_node`]: crate::storage::GraphStore::create_node
+    pub(crate) fn create_node_with_id(
+        &self,
+        graph: &str,
+        id: crate::storage::NodeId,
+        labels: Vec<String>,
+        properties: indexmap::IndexMap<String, crate::types::Value>,
+    ) -> Result<(), StorageError> {
+        super::nodes::create_node_with_id_impl(self, graph, id, labels, properties)
+    }
+
+    /// Create an edge with an explicit, caller-supplied [`EdgeId`].
+    ///
+    /// Mirrors [`Self::create_node_with_id`]. Idempotent: a pre-existing edge
+    /// with `id` makes this a no-op.
+    pub(crate) fn create_edge_with_id(
+        &self,
+        graph: &str,
+        id: crate::storage::EdgeId,
+        src: crate::storage::NodeId,
+        dst: crate::storage::NodeId,
+        rel_type: String,
+        properties: indexmap::IndexMap<String, crate::types::Value>,
+    ) -> Result<(), StorageError> {
+        super::edges::create_edge_with_id_impl(self, graph, id, src, dst, rel_type, properties)
+    }
+
     pub(crate) fn read_snapshot(&self) -> Result<Arc<HashMap<String, GraphInner>>, StorageError> {
         let guard = self
             .inner

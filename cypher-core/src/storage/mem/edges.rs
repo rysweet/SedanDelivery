@@ -75,6 +75,76 @@ pub(crate) fn create_edge_impl(
     Ok(edge_id)
 }
 
+/// Create an edge with an explicit, caller-supplied [`EdgeId`].
+///
+/// Unlike [`create_edge_impl`], this bypasses the per-graph ID allocator and
+/// uses `edge_id` verbatim. The store's internal `edge_seq` is advanced to
+/// `max(current, edge_id)` so future auto-allocated IDs skip past it.
+///
+/// Idempotent: if an edge with `edge_id` already exists in `graph`, this is
+/// a no-op and returns `Ok(())`. Used by the WAL replay path to achieve
+/// in-place idempotency (issue #1701).
+pub(crate) fn create_edge_with_id_impl(
+    store: &InMemoryGraphStore,
+    graph: &str,
+    edge_id: EdgeId,
+    src: NodeId,
+    dst: NodeId,
+    rel_type: String,
+    properties: IndexMap<String, Value>,
+) -> Result<(), StorageError> {
+    let mut guard = store.write()?;
+    let map = Arc::make_mut(&mut guard);
+    let g = InMemoryGraphStore::require_graph_mut(map, graph)?;
+
+    // Idempotent: if the edge already exists, nothing to do.
+    if g.edges.contains_key(&edge_id.0) {
+        return Ok(());
+    }
+
+    // Endpoint validation mirrors [`create_edge_impl`].
+    if !g.nodes.contains_key(&src.0) {
+        return Err(StorageError::NodeNotFound { id: src.0 });
+    }
+    if !g.nodes.contains_key(&dst.0) {
+        return Err(StorageError::NodeNotFound { id: dst.0 });
+    }
+
+    if edge_id.0 > g.edge_seq {
+        g.edge_seq = edge_id.0;
+    }
+
+    let mut clean_props = properties;
+    clean_props.shift_remove("_sd2_id");
+    clean_props.shift_remove("_sd2_eid");
+
+    let edge = EdgeData {
+        id: edge_id,
+        rel_type: rel_type.clone(),
+        src,
+        dst,
+        properties: clean_props,
+    };
+    g.edges.insert(edge_id.0, edge);
+
+    g.out_adj.entry(src.0).or_default().push(AdjEntry {
+        edge_id,
+        neighbor_id: dst,
+        rel_type: rel_type.clone(),
+    });
+    g.in_adj.entry(dst.0).or_default().push(AdjEntry {
+        edge_id,
+        neighbor_id: src,
+        rel_type: rel_type.clone(),
+    });
+
+    g.reltype_index
+        .entry(rel_type)
+        .or_default()
+        .insert(edge_id.0);
+    Ok(())
+}
+
 /// Merge-update edge properties (SET r += {...}).
 pub(crate) fn set_edge_properties_impl(
     store: &InMemoryGraphStore,
