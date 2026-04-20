@@ -387,6 +387,45 @@ mod tests {
     }
 
     #[test]
+    fn compile_error_path_via_readonly_violation() {
+        // Parses successfully but the compiler rejects mutation under
+        // ReadOnlyStrategy. Exercises the `compiler.compile(&steps)?`
+        // error branch in `compile()`.
+        let engine = GremlinEngine::new();
+        let err = engine
+            .compile("g.withStrategies(ReadOnlyStrategy).V().drop()")
+            .err()
+            .expect("expected compile error");
+        assert!(matches!(err, GremlinError::Compile(_)));
+        let _ = format!("{err}");
+        let _ = format!("{err:?}");
+    }
+
+    #[test]
+    fn execute_with_budget_propagates_parse_error() {
+        // Exercises the parse-error `?` branch inside `execute_with_budget`.
+        let engine = GremlinEngine::new();
+        let store = test_store();
+        let mut budget = ExecutionBudget::default_budget();
+        let err = engine
+            .execute_with_budget(&store, "test", "???not gremlin???", &mut budget)
+            .unwrap_err();
+        assert!(matches!(err, GremlinError::Parse(_)));
+    }
+
+    #[test]
+    fn execute_with_budget_success_path() {
+        let engine = GremlinEngine::new();
+        let store = test_store();
+        seed_graph(&store);
+        let mut budget = ExecutionBudget::default_budget();
+        let result = engine
+            .execute_with_budget(&store, "test", "g.V().count()", &mut budget)
+            .unwrap();
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
     fn compiled_query_reuse_across_stores() {
         let engine = GremlinEngine::new();
         let query = engine.compile("g.V().count()").unwrap();
