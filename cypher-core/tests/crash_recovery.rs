@@ -476,3 +476,114 @@ fn recovery_repeated_open_close_is_idempotent() {
         );
     }
 }
+
+// ── 5. Per-record CRC32C framing (issue #1702) ──────────────────────────────
+//
+// The WAL writer emits each record as `CRC:<hex8> <json>\n` where the prefix
+// encodes a CRC32C (Castagnoli) checksum of the JSON payload. Recovery:
+//
+//   * Verifies the checksum on every fully-terminated framed record.
+//   * Accepts legacy (pre-#1702) unchecksummed records for on-disk compat.
+//   * Returns Err on checksum mismatch — a mid-record bit flip is real
+//     on-disk corruption, not a torn write, and must not silently pass.
+
+fn read_wal(dir: &Path) -> Vec<u8> {
+    fs::read(dir.join("wal.jsonl")).unwrap()
+}
+
+#[test]
+fn recovery_v2_wal_is_framed_with_crc_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = PersistentGraphStore::open(cfg(dir.path())).unwrap();
+        store.create_graph("g").unwrap();
+        write_n(&store, "g", 2);
+    }
+    let bytes = read_wal(dir.path());
+    let text = std::str::from_utf8(&bytes).unwrap();
+    for (i, line) in text.lines().enumerate() {
+        assert!(
+            line.starts_with("CRC:") && line.len() > 13 && line.as_bytes()[12] == b' ',
+            "line {i} lacks CRC32C frame: {line:?}"
+        );
+        let hex = &line[4..12];
+        assert!(
+            hex.bytes().all(|b| b.is_ascii_hexdigit()),
+            "line {i} has non-hex CRC: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn recovery_v2_framed_wal_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let ids = {
+        let store = PersistentGraphStore::open(cfg(dir.path())).unwrap();
+        store.create_graph("g").unwrap();
+        let ids = write_n(&store, "g", 5);
+        assert_n_present(&store, "g", &ids);
+        ids
+    };
+    // Re-open must reload every framed record.
+    let store = PersistentGraphStore::open(cfg(dir.path())).unwrap();
+    assert_n_present(&store, "g", &ids);
+}
+
+#[test]
+fn recovery_legacy_v1_unchecksummed_wal_still_replays() {
+    // Simulate a pre-#1702 WAL by hand-writing plain JSON lines (no CRC prefix).
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path()).unwrap();
+    let wal_path = dir.path().join("wal.jsonl");
+    {
+        let mut f = fs::File::create(&wal_path).unwrap();
+        // Legacy v1 format: raw JSON, one line per entry, no CRC:<hex> prefix.
+        writeln!(f, r#"{{"op":"CreateGraph","name":"g"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"op":"CreateNode","graph":"g","labels":["Item"],"properties":[["name",{{"t":"Str","v":"legacy"}}],["idx",{{"t":"Int","v":7}}]],"id":1}}"#
+        )
+        .unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let store = PersistentGraphStore::open(cfg(dir.path())).expect("legacy v1 WAL must load");
+    let n = store.get_node("g", NodeId(1)).unwrap().expect("node 1");
+    assert_eq!(n.properties["idx"], Value::Int(7));
+    assert_eq!(n.properties["name"], Value::Str("legacy".into()));
+}
+
+#[test]
+fn recovery_v2_wal_mid_record_bit_flip_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let store = PersistentGraphStore::open(cfg(dir.path())).unwrap();
+        store.create_graph("g").unwrap();
+        write_n(&store, "g", 3);
+    }
+
+    // Flip a byte inside the first CreateNode's JSON payload. The line is still
+    // newline-terminated, so the torn-tail rule does not apply — this is real
+    // on-disk corruption and must surface as an error.
+    let wal_path = dir.path().join("wal.jsonl");
+    let mut bytes = fs::read(&wal_path).unwrap();
+    // Find the first CreateNode line (has "CreateNode" substring). Mutate a
+    // byte inside its JSON payload (after the `CRC:<hex8> ` prefix).
+    let needle = b"CreateNode";
+    let pos = bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .expect("CreateNode payload not found");
+    // Flip one bit inside the op name — this will change CRC without
+    // producing invalid JSON structure, so we know the CRC (not serde) catches it.
+    bytes[pos + 1] ^= 0x20; // 'r' <-> 'R'
+    fs::write(&wal_path, &bytes).unwrap();
+
+    let err = PersistentGraphStore::open(cfg(dir.path()))
+        .expect_err("mid-record bit-flip must be detected by CRC32C");
+    let msg = format!("{err}").to_lowercase();
+    assert!(
+        msg.contains("crc32c") || msg.contains("crc") || msg.contains("corrupt"),
+        "expected CRC corruption error, got: {err}"
+    );
+}

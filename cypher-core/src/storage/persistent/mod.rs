@@ -148,9 +148,10 @@ impl PersistentGraphStore {
 
     /// Append a WAL entry and optionally sync.
     fn append_wal(&self, entry: &WalEntry) -> Result<(), StorageError> {
-        let line = serde_json::to_string(entry).map_err(|e| StorageError::Serialization {
+        let payload = serde_json::to_string(entry).map_err(|e| StorageError::Serialization {
             msg: format!("WAL serialize failed: {e}"),
         })?;
+        let line = wal::frame_wal_line(&payload);
 
         let mut wal = self.wal.lock().map_err(|e| StorageError::Backend {
             msg: format!("WAL lock poisoned: {e}"),

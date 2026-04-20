@@ -23,11 +23,27 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use super::wal::{json_to_props, WalEntry};
+use super::wal::{inspect_wal_line, json_to_props, WalEntry, WalFrame};
 use crate::error::StorageError;
 use crate::storage::mem::InMemoryGraphStore;
 use crate::storage::{EdgeId, GraphStore, NodeId};
+
+/// Warn-once guard for legacy (unchecksummed v1) WAL/snapshot lines. Issue #1702:
+/// new records are framed with `CRC:<hex8> <json>`; we still accept legacy
+/// lines for on-disk compat but log a single warning per process.
+static LEGACY_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn warn_legacy_once(path: &Path) {
+    if !LEGACY_WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            path = %path.display(),
+            "reading legacy (pre-#1702) unchecksummed WAL/snapshot records; \
+             new records will be written with CRC32C framing"
+        );
+    }
+}
 
 /// Replay a file of JSON-line entries into an [`InMemoryGraphStore`].
 ///
@@ -57,8 +73,28 @@ pub(super) fn replay_file(store: &InMemoryGraphStore, path: &Path) -> Result<(),
             continue;
         }
 
+        let payload = match inspect_wal_line(line) {
+            WalFrame::Checked(p) => p,
+            WalFrame::Legacy(p) => {
+                warn_legacy_once(path);
+                p
+            }
+            WalFrame::Corrupt { expected, actual } => {
+                return Err(StorageError::Serialization {
+                    msg: format!(
+                        "WAL CRC32C mismatch at line {}: expected {:08x}, computed {:08x} \
+                         (fully-terminated record in {}) — on-disk corruption detected (#1702)",
+                        line_num + 1,
+                        expected,
+                        actual,
+                        path.display(),
+                    ),
+                });
+            }
+        };
+
         let entry: WalEntry =
-            serde_json::from_str(line).map_err(|e| StorageError::Serialization {
+            serde_json::from_str(payload).map_err(|e| StorageError::Serialization {
                 msg: format!("WAL parse error at line {}: {e}", line_num + 1),
             })?;
 
@@ -87,6 +123,16 @@ pub(super) fn replay_file(store: &InMemoryGraphStore, path: &Path) -> Result<(),
 /// If the file ends with `\n`, every record is treated as committed and parse
 /// failures propagate as errors (no torn-tail recovery is attempted — the data
 /// is intact on disk and a parse error means real corruption, not a torn write).
+///
+/// # Per-record checksums (issue #1702)
+///
+/// Each fully-committed line may be framed as `CRC:<hex8> <json>` where the
+/// prefix encodes a CRC32C (Castagnoli) checksum of the JSON payload bytes.
+/// If the prefix is present and the checksum does not match, the line is
+/// real on-disk corruption (not a torn write, which by definition lacks the
+/// trailing `\n`) and [`StorageError::Serialization`] is returned. Lines
+/// without the prefix are treated as legacy (v1) records and replayed
+/// unverified; a one-shot `warn!` is logged per process.
 pub(super) fn replay_wal_file(store: &InMemoryGraphStore, path: &Path) -> Result<(), StorageError> {
     let bytes = fs::read(path).map_err(|e| StorageError::Backend {
         msg: format!("failed to read {}: {e}", path.display()),
@@ -113,8 +159,27 @@ pub(super) fn replay_wal_file(store: &InMemoryGraphStore, path: &Path) -> Result
         if line.is_empty() {
             continue;
         }
+        let payload = match inspect_wal_line(line) {
+            WalFrame::Checked(p) => p,
+            WalFrame::Legacy(p) => {
+                warn_legacy_once(path);
+                p
+            }
+            WalFrame::Corrupt { expected, actual } => {
+                return Err(StorageError::Serialization {
+                    msg: format!(
+                        "WAL CRC32C mismatch at line {}: expected {:08x}, computed {:08x} \
+                         (fully-terminated record in {}) — on-disk corruption detected (#1702)",
+                        line_num + 1,
+                        expected,
+                        actual,
+                        path.display(),
+                    ),
+                });
+            }
+        };
         let entry: WalEntry =
-            serde_json::from_str(line).map_err(|e| StorageError::Serialization {
+            serde_json::from_str(payload).map_err(|e| StorageError::Serialization {
                 msg: format!("WAL parse error at line {}: {e}", line_num + 1),
             })?;
         replay_entry(store, entry)?;

@@ -19,6 +19,7 @@ jiff       = { workspace = true }
 petgraph   = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
+crc32c     = { workspace = true }
 tracing    = { workspace = true }
 smol_str   = { workspace = true }
 wide       = { workspace = true, optional = true }
