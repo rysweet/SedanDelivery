@@ -233,3 +233,296 @@ pub(in crate::executor::engine::gremlin) fn split_compound_predicate(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Value;
+
+    // ── eval_select_math_expr ────────────────────────────────────────
+
+    #[test]
+    fn math_self_add_int() {
+        assert_eq!(
+            eval_select_math_expr("_+_", &Value::Int(5)),
+            Value::Float(10.0)
+        );
+    }
+
+    #[test]
+    fn math_self_add_float() {
+        assert_eq!(
+            eval_select_math_expr("_+_", &Value::Float(2.5)),
+            Value::Float(5.0)
+        );
+    }
+
+    #[test]
+    fn math_self_sub_is_zero() {
+        assert_eq!(
+            eval_select_math_expr("_-_", &Value::Int(7)),
+            Value::Float(0.0)
+        );
+    }
+
+    #[test]
+    fn math_self_mul() {
+        assert_eq!(
+            eval_select_math_expr("_*_", &Value::Int(4)),
+            Value::Float(16.0)
+        );
+    }
+
+    #[test]
+    fn math_self_div_nonzero() {
+        assert_eq!(
+            eval_select_math_expr("_/_", &Value::Int(3)),
+            Value::Float(1.0)
+        );
+    }
+
+    #[test]
+    fn math_self_div_zero_is_nan() {
+        if let Value::Float(f) = eval_select_math_expr("_/_", &Value::Int(0)) {
+            assert!(f.is_nan());
+        } else {
+            panic!("expected NaN float");
+        }
+    }
+
+    #[test]
+    fn math_self_mod_nonzero_is_zero() {
+        assert_eq!(
+            eval_select_math_expr("_%_", &Value::Int(3)),
+            Value::Float(0.0)
+        );
+    }
+
+    #[test]
+    fn math_self_mod_zero_is_nan() {
+        if let Value::Float(f) = eval_select_math_expr("_%_", &Value::Int(0)) {
+            assert!(f.is_nan());
+        } else {
+            panic!("expected NaN float");
+        }
+    }
+
+    #[test]
+    fn math_with_whitespace_normalised() {
+        assert_eq!(
+            eval_select_math_expr("  _ + _  ", &Value::Int(2)),
+            Value::Float(4.0)
+        );
+    }
+
+    #[test]
+    fn math_unknown_expr_returns_self() {
+        assert_eq!(eval_select_math_expr("_!_", &Value::Int(5)), Value::Int(5));
+    }
+
+    #[test]
+    fn math_non_numeric_returns_self() {
+        assert_eq!(
+            eval_select_math_expr("_+_", &Value::Str("x".into())),
+            Value::Str("x".into())
+        );
+    }
+
+    // ── eval_gremlin_predicate ───────────────────────────────────────
+
+    #[test]
+    fn pred_between_inclusive_lower() {
+        assert!(eval_gremlin_predicate("P.between(10,20)", &Value::Int(10)));
+    }
+
+    #[test]
+    fn pred_between_exclusive_upper() {
+        assert!(!eval_gremlin_predicate("P.between(10,20)", &Value::Int(20)));
+    }
+
+    #[test]
+    fn pred_between_outside() {
+        assert!(!eval_gremlin_predicate("P.between(10,20)", &Value::Int(5)));
+    }
+
+    #[test]
+    fn pred_between_malformed() {
+        assert!(!eval_gremlin_predicate("P.between(10)", &Value::Int(15)));
+        assert!(!eval_gremlin_predicate("P.between(a,b)", &Value::Int(15)));
+    }
+
+    #[test]
+    fn pred_lt_gt_lte_gte() {
+        assert!(eval_gremlin_predicate("P.lt(30)", &Value::Int(20)));
+        assert!(!eval_gremlin_predicate("P.lt(30)", &Value::Int(30)));
+        assert!(eval_gremlin_predicate("P.lte(30)", &Value::Int(30)));
+        assert!(eval_gremlin_predicate("P.gt(30)", &Value::Int(40)));
+        assert!(!eval_gremlin_predicate("P.gt(30)", &Value::Int(30)));
+        assert!(eval_gremlin_predicate("P.gte(30)", &Value::Int(30)));
+    }
+
+    #[test]
+    fn pred_eq_neq_numeric() {
+        assert!(eval_gremlin_predicate("P.eq(5)", &Value::Int(5)));
+        assert!(eval_gremlin_predicate("P.eq(5)", &Value::Float(5.0)));
+        assert!(eval_gremlin_predicate("P.neq(5)", &Value::Int(6)));
+    }
+
+    #[test]
+    fn pred_eq_string_match() {
+        assert!(eval_gremlin_predicate(
+            r#"P.eq("hello")"#,
+            &Value::Str("hello".into())
+        ));
+        assert!(!eval_gremlin_predicate(
+            r#"P.eq("hello")"#,
+            &Value::Str("world".into())
+        ));
+        // eq on non-string non-numeric value returns false
+        assert!(!eval_gremlin_predicate(r#"P.eq("x")"#, &Value::Bool(true)));
+    }
+
+    #[test]
+    fn pred_neq_string_returns_true_for_other_types() {
+        assert!(eval_gremlin_predicate(
+            r#"P.neq("hello")"#,
+            &Value::Str("world".into())
+        ));
+        assert!(eval_gremlin_predicate(r#"P.neq("x")"#, &Value::Bool(true)));
+    }
+
+    #[test]
+    fn pred_unknown_returns_false() {
+        assert!(!eval_gremlin_predicate("P.unknown(1)", &Value::Int(1)));
+    }
+
+    #[test]
+    fn pred_compound_or() {
+        assert!(eval_gremlin_predicate(
+            "P.lt(10).or(P.gt(20))",
+            &Value::Int(5)
+        ));
+        assert!(eval_gremlin_predicate(
+            "P.lt(10).or(P.gt(20))",
+            &Value::Int(25)
+        ));
+        assert!(!eval_gremlin_predicate(
+            "P.lt(10).or(P.gt(20))",
+            &Value::Int(15)
+        ));
+    }
+
+    #[test]
+    fn pred_compound_and() {
+        assert!(eval_gremlin_predicate(
+            "P.gt(10).and(P.lt(20))",
+            &Value::Int(15)
+        ));
+        assert!(!eval_gremlin_predicate(
+            "P.gt(10).and(P.lt(20))",
+            &Value::Int(5)
+        ));
+    }
+
+    #[test]
+    fn pred_compound_without_p_prefix_on_inner() {
+        assert!(eval_gremlin_predicate("gt(10).or(lt(2))", &Value::Int(15)));
+    }
+
+    #[test]
+    fn pred_no_p_prefix() {
+        assert!(eval_gremlin_predicate("between(0,5)", &Value::Int(3)));
+    }
+
+    // ── parse_gremlin_option_args / value / trim ─────────────────────
+
+    #[test]
+    fn parse_args_simple() {
+        let v = parse_gremlin_option_args("a, b, c");
+        assert_eq!(v, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn parse_args_respects_double_quotes() {
+        let v = parse_gremlin_option_args(r#""a,b", c"#);
+        assert_eq!(v, vec![r#""a,b""#, "c"]);
+    }
+
+    #[test]
+    fn parse_args_respects_single_quotes() {
+        let v = parse_gremlin_option_args("'a,b', c");
+        assert_eq!(v, vec!["'a,b'", "c"]);
+    }
+
+    #[test]
+    fn parse_args_empty_input() {
+        let v = parse_gremlin_option_args("");
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn parse_args_trailing_whitespace_trimmed() {
+        let v = parse_gremlin_option_args("  one   ");
+        assert_eq!(v, vec!["one"]);
+    }
+
+    #[test]
+    fn trim_strips_quotes() {
+        assert_eq!(trim_gremlin_option_string(r#"  "abc"  "#), "abc");
+        assert_eq!(trim_gremlin_option_string("  'x'  "), "x");
+    }
+
+    #[test]
+    fn parse_value_string_literal_double() {
+        assert_eq!(
+            parse_gremlin_option_value(r#""hi""#),
+            Value::Str("hi".into())
+        );
+    }
+
+    #[test]
+    fn parse_value_string_literal_single() {
+        assert_eq!(parse_gremlin_option_value("'hi'"), Value::Str("hi".into()));
+    }
+
+    #[test]
+    fn parse_value_int_float_bool_null() {
+        assert_eq!(parse_gremlin_option_value("42"), Value::Int(42));
+        assert_eq!(parse_gremlin_option_value("3.5"), Value::Float(3.5));
+        assert_eq!(parse_gremlin_option_value("true"), Value::Bool(true));
+        assert_eq!(parse_gremlin_option_value("false"), Value::Bool(false));
+        assert_eq!(parse_gremlin_option_value("null"), Value::Null);
+    }
+
+    #[test]
+    fn parse_value_bare_word_falls_back_to_string() {
+        assert_eq!(parse_gremlin_option_value("foo"), Value::Str("foo".into()));
+    }
+
+    // ── split_compound_predicate ─────────────────────────────────────
+
+    #[test]
+    fn split_returns_none_for_simple() {
+        assert!(split_compound_predicate("between(1,2)").is_none());
+        assert!(split_compound_predicate("lt(5)").is_none());
+    }
+
+    #[test]
+    fn split_returns_or_pair() {
+        let r = split_compound_predicate("lt(10).or(gt(20))").unwrap();
+        assert_eq!(r, ("lt(10)", "gt(20)", true));
+    }
+
+    #[test]
+    fn split_returns_and_pair() {
+        let r = split_compound_predicate("gt(10).and(lt(20))").unwrap();
+        assert_eq!(r, ("gt(10)", "lt(20)", false));
+    }
+
+    #[test]
+    fn split_ignores_nested_parens() {
+        // Outer .or( ) — the inner between() parens shouldn't trigger split
+        let r = split_compound_predicate("between(0,5).or(gt(10))").unwrap();
+        assert_eq!(r, ("between(0,5)", "gt(10)", true));
+    }
+}

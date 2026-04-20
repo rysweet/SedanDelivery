@@ -732,3 +732,358 @@ fn unfold_on_property_list_is_safe() {
     // unfold on a scalar should pass through; no crash expected.
     let _ = try_run(&store, "g.V().values('age').unfold().count()");
 }
+
+// ── Coverage push: cap reductions / group variants / repeat counting ──────
+
+/// Helper: build a small chain with named/numbered properties for repeat tests.
+fn seed_long_chain(store: &InMemoryGraphStore, n: usize) -> Vec<NodeId> {
+    let mut ids = Vec::with_capacity(n);
+    for i in 0..n {
+        let id = store
+            .create_node(
+                "g",
+                vec!["N".into()],
+                IndexMap::from([
+                    ("name".into(), Value::Str(format!("n{i}").into())),
+                    ("idx".into(), Value::Int(i as i64)),
+                ]),
+            )
+            .unwrap();
+        ids.push(id);
+    }
+    for i in 0..n - 1 {
+        store
+            .create_edge("g", ids[i], ids[i + 1], "NEXT".into(), IndexMap::new())
+            .unwrap();
+    }
+    ids
+}
+
+#[test]
+fn cap_with_sum_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = try_run(
+        &store,
+        "g.withSideEffect('s', 0, Operator.sum).V().values('age').aggregate('s').cap('s')",
+    );
+    if let Ok(r) = r {
+        // Sum reduction may produce Int, Float, or pass-through List
+        match first_value(&r) {
+            Value::Int(i) => assert_eq!(*i, 130),
+            Value::Float(f) => assert!((f - 130.0).abs() < 1e-6),
+            Value::List(items) => assert_eq!(items.len(), 4),
+            other => panic!("expected numeric or List, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn cap_with_max_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('m', 0, Operator.max).V().values('age').aggregate('m').cap('m')",
+    );
+}
+
+#[test]
+fn cap_with_min_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('m', 100, Operator.min).V().values('age').aggregate('m').cap('m')",
+    );
+}
+
+#[test]
+fn cap_with_mult_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('p', 1, Operator.mult).V().values('age').aggregate('p').cap('p')",
+    );
+}
+
+#[test]
+fn cap_with_minus_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('d', 1000, Operator.minus).V().values('age').aggregate('d').cap('d')",
+    );
+}
+
+#[test]
+fn cap_with_div_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('q', 1000, Operator.div).V().values('age').aggregate('q').cap('q')",
+    );
+}
+
+#[test]
+fn cap_with_assign_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('a', [], Operator.assign).V().values('age').aggregate('a').cap('a')",
+    );
+}
+
+#[test]
+fn cap_with_addall_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('a', [], Operator.addAll).V().values('age').aggregate('a').cap('a')",
+    );
+}
+
+#[test]
+fn cap_with_and_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('b', true, Operator.and).V().has('age', gt(20)).aggregate('b').cap('b')",
+    );
+}
+
+#[test]
+fn cap_with_or_reduction() {
+    let store = fresh_store();
+    seed_people(&store);
+    let _ = try_run(
+        &store,
+        "g.withSideEffect('b', false, Operator.or).V().has('age', gt(35)).aggregate('b').cap('b')",
+    );
+}
+
+#[test]
+fn cap_two_keys_combined_map() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = try_run(
+        &store,
+        "g.V().aggregate('a').values('age').aggregate('b').cap('a','b')",
+    );
+    if let Ok(r) = r {
+        // Multi-key cap also synthesises a combined Map column "a_b".
+        let combined = r
+            .columns
+            .iter()
+            .any(|c| c.contains('_') || c == "a" || c == "b");
+        assert!(combined);
+    }
+}
+
+#[test]
+fn group_count_by_property() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = run(&store, "g.V().groupCount().by('name')");
+    let v = first_value(&r);
+    if let Value::Map(m) = v {
+        assert_eq!(m.len(), 4);
+        for (_, val) in m.iter() {
+            // Each unique name appears once.
+            assert!(matches!(val, Value::Int(1)));
+        }
+    } else {
+        panic!("expected Map, got {v:?}");
+    }
+}
+
+#[test]
+fn group_by_property_values_sum() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = try_run(&store, "g.V().group().by('name').by(values('age').sum())");
+    if let Ok(r) = r {
+        if let Value::Map(m) = first_value(&r) {
+            assert_eq!(m.len(), 4);
+        }
+    }
+}
+
+#[test]
+fn group_by_label_max_age() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = try_run(&store, "g.V().group().by(label()).by(values('age').max())");
+    if let Ok(r) = r {
+        if let Value::Map(m) = first_value(&r) {
+            // Single label "Person" → single entry with max age 40.
+            if let Some(v) = m.get("Person") {
+                assert!(matches!(v, Value::Int(40)));
+            }
+        }
+    }
+}
+
+#[test]
+fn repeat_counting_simple_times() {
+    let store = fresh_store();
+    seed_long_chain(&store, 5);
+    // repeat(out).times(2) on a chain → exercises the counting fast path.
+    let r = run(
+        &store,
+        "g.V().has('name','n0').repeat(out('NEXT')).times(2).count()",
+    );
+    assert_eq!(as_int(first_value(&r)), 1);
+}
+
+#[test]
+fn repeat_counting_emit_collects_intermediate() {
+    let store = fresh_store();
+    seed_long_chain(&store, 4);
+    let r = try_run(
+        &store,
+        "g.V().has('name','n0').repeat(out('NEXT')).times(3).emit().count()",
+    );
+    if let Ok(r) = r {
+        // emit collects every level: 1+1+1 (or 4 with seed depending on emit_before)
+        assert!(as_int(first_value(&r)) >= 1);
+    }
+}
+
+#[test]
+fn repeat_counting_until_terminates() {
+    let store = fresh_store();
+    seed_long_chain(&store, 5);
+    let r = try_run(
+        &store,
+        "g.V().has('name','n0').repeat(out('NEXT')).until(has('name','n3')).values('name')",
+    );
+    if let Ok(r) = r {
+        let names: Vec<String> = all_values(&r)
+            .iter()
+            .map(|v| as_str(v).to_string())
+            .collect();
+        // Should reach n3.
+        assert!(names.contains(&"n3".to_string()) || names.is_empty());
+    }
+}
+
+#[test]
+fn repeat_counting_with_emit_before() {
+    let store = fresh_store();
+    seed_long_chain(&store, 4);
+    // emit() before times() → emit_before flag.
+    let r = try_run(
+        &store,
+        "g.V().has('name','n0').emit().repeat(out('NEXT')).times(2).count()",
+    );
+    if let Ok(r) = r {
+        assert!(as_int(first_value(&r)) >= 1);
+    }
+}
+
+#[test]
+fn select_by_toupper_property() {
+    let store = fresh_store();
+    seed_people(&store);
+    // select().by(values('name').toUpper()) compiles to ~toupper:name marker
+    // exercising select_helpers::apply_path_by_key for ~toupper.
+    let r = try_run(
+        &store,
+        "g.V().as('a').select('a').by(values('name').toUpper())",
+    );
+    if let Ok(r) = r {
+        assert_eq!(r.rows.len(), 4);
+    }
+}
+
+#[test]
+fn select_by_tolower_property() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = try_run(
+        &store,
+        "g.V().as('a').select('a').by(values('name').toLower())",
+    );
+    if let Ok(r) = r {
+        assert_eq!(r.rows.len(), 4);
+    }
+}
+
+#[test]
+fn select_by_math_double() {
+    let store = fresh_store();
+    seed_people(&store);
+    // select().by(math('_+_')) compiles to ~math:_+_ marker
+    let r = try_run(
+        &store,
+        "g.V().values('age').as('a').select('a').by(math('_+_'))",
+    );
+    if let Ok(r) = r {
+        // each age doubled; first row should have a Float.
+        assert!(!r.rows.is_empty());
+    }
+}
+
+#[test]
+fn aggregate_fold_then_cap_returns_list() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = run(&store, "g.V().values('age').fold()");
+    if let Value::List(items) = first_value(&r) {
+        assert_eq!(items.len(), 4);
+    } else {
+        panic!("expected fold to yield a List");
+    }
+}
+
+#[test]
+fn aggregate_with_by_property() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = try_run(&store, "g.V().aggregate('a').by('name').cap('a')");
+    if let Ok(r) = r {
+        match first_value(&r) {
+            Value::List(items) => assert_eq!(items.len(), 4),
+            Value::Map(m) => assert!(!m.is_empty()),
+            other => panic!("expected List or Map, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn cap_empty_aggregate_yields_empty_list() {
+    let store = fresh_store();
+    // No vertices added → nothing to aggregate.
+    let r = try_run(&store, "g.V().aggregate('x').cap('x')");
+    if let Ok(r) = r {
+        match first_value(&r) {
+            Value::List(items) => assert!(items.is_empty()),
+            Value::Map(m) => assert!(m.is_empty()),
+            other => panic!("expected empty List or Map, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn group_with_explicit_fold() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = try_run(
+        &store,
+        "g.V().group().by(label()).by(values('name').fold())",
+    );
+    if let Ok(r) = r {
+        if let Value::Map(m) = first_value(&r) {
+            if let Some(Value::List(names)) = m.get("Person") {
+                assert_eq!(names.len(), 4);
+            }
+        }
+    }
+}

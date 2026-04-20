@@ -246,3 +246,374 @@ impl<'a> QueryExecutor<'a> {
         Ok(vec![row])
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::budget::ExecutionBudget;
+    use crate::executor::engine::{ExecContext, MutationStats, QueryExecutor};
+    use crate::storage::{GraphStore, InMemoryGraphStore};
+
+    fn make_store() -> InMemoryGraphStore {
+        let s = InMemoryGraphStore::new();
+        s.create_graph("g").unwrap();
+        s
+    }
+
+    fn make_cx<'a, 'b>(
+        budget: &'a mut ExecutionBudget,
+        stats: &'a mut MutationStats,
+    ) -> ExecContext<'a>
+    where
+        'b: 'a,
+    {
+        ExecContext {
+            graph: "g",
+            budget,
+            outer_rows: &[],
+            stats,
+        }
+    }
+
+    fn run_cap(
+        exe: &QueryExecutor<'_>,
+        keys: &[&str],
+        reductions: Vec<(String, String, f64)>,
+    ) -> Vec<Row> {
+        // Use SingleRow as child and pre-populate the side-effect store
+        // (covers the "agg_vals empty + stored Some" branch).
+        let op = Operator::Cap {
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            child: Box::new(Operator::SingleRow),
+            reductions,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = make_cx(&mut budget, &mut stats);
+        exe.exec_cap(&mut cx, &op).unwrap()
+    }
+
+    /// Build a Project that injects `__gremlin_agg_<key>` columns from list
+    /// literals so the cap reduction loop sees actual values.
+    fn project_agg(items: Vec<(String, Vec<Value>)>) -> Operator {
+        use crate::ast::{Expr, Identifier};
+        let proj_items: Vec<(Expr, Option<Identifier>)> = items
+            .into_iter()
+            .map(|(k, vals)| {
+                let exprs: Vec<Expr> = vals
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Int(i) => Expr::Integer(i),
+                        Value::Float(f) => Expr::Float(f),
+                        Value::Bool(b) => Expr::Bool(b),
+                        Value::Str(s) => Expr::Str(s),
+                        _ => Expr::Null,
+                    })
+                    .collect();
+                (
+                    Expr::List(exprs),
+                    Some(Identifier::new(format!("__gremlin_agg_{k}"))),
+                )
+            })
+            .collect();
+        Operator::Project {
+            items: proj_items,
+            child: Box::new(Operator::SingleRow),
+        }
+    }
+
+    fn run_cap_with_project(
+        exe: &QueryExecutor<'_>,
+        keys: &[&str],
+        reductions: Vec<(String, String, f64)>,
+        agg_lists: Vec<(String, Vec<Value>)>,
+    ) -> Vec<Row> {
+        let op = Operator::Cap {
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            child: Box::new(project_agg(agg_lists)),
+            reductions,
+        };
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = make_cx(&mut budget, &mut stats);
+        exe.exec_cap(&mut cx, &op).unwrap()
+    }
+
+    #[test]
+    fn cap_no_aggregate_yields_empty_list() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap(&exe, &["x"], vec![]);
+        assert_eq!(rows.len(), 1);
+        let v = rows[0].get("x").unwrap();
+        match v {
+            Value::List(items) => assert!(items.is_empty()),
+            other => panic!("expected empty List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_with_stored_list_returns_it() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        exe.gremlin_side_effects.borrow_mut().insert(
+            "__gremlin_agg_x".into(),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+        );
+        let rows = run_cap(&exe, &["x"], vec![]);
+        match rows[0].get("x").unwrap() {
+            Value::List(items) => assert_eq!(items.len(), 3),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_sum_reduction_int() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["s"],
+            vec![("s".into(), "sum".into(), 0.0)],
+            vec![(
+                "s".into(),
+                vec![Value::Int(1), Value::Int(2), Value::Int(3), Value::Int(4)],
+            )],
+        );
+        assert_eq!(rows[0].get("s").unwrap(), &Value::Int(10));
+    }
+
+    #[test]
+    fn cap_sum_reduction_with_float_promotes() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["s"],
+            vec![("s".into(), "sum".into(), 0.0)],
+            vec![("s".into(), vec![Value::Int(1), Value::Float(0.5)])],
+        );
+        match rows[0].get("s").unwrap() {
+            Value::Float(f) => assert!((f - 1.5).abs() < 1e-9),
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_minus_reduction() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["d"],
+            vec![("d".into(), "minus".into(), 100.0)],
+            vec![(
+                "d".into(),
+                vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            )],
+        );
+        assert_eq!(rows[0].get("d").unwrap(), &Value::Int(94));
+    }
+
+    #[test]
+    fn cap_mult_reduction() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["p"],
+            vec![("p".into(), "mult".into(), 1.0)],
+            vec![(
+                "p".into(),
+                vec![Value::Int(2), Value::Int(3), Value::Int(4)],
+            )],
+        );
+        assert_eq!(rows[0].get("p").unwrap(), &Value::Int(24));
+    }
+
+    #[test]
+    fn cap_div_reduction_promotes_to_float() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["q"],
+            vec![("q".into(), "div".into(), 100.0)],
+            vec![("q".into(), vec![Value::Int(2), Value::Int(2)])],
+        );
+        match rows[0].get("q").unwrap() {
+            Value::Float(f) => assert!((f - 25.0).abs() < 1e-9),
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_div_zero_skips() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["q"],
+            vec![("q".into(), "div".into(), 100.0)],
+            vec![("q".into(), vec![Value::Int(0), Value::Int(2)])],
+        );
+        match rows[0].get("q").unwrap() {
+            Value::Float(f) => assert!((f - 50.0).abs() < 1e-9),
+            other => panic!("expected Float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_min_max_reductions() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["m"],
+            vec![("m".into(), "min".into(), 100.0)],
+            vec![(
+                "m".into(),
+                vec![Value::Int(5), Value::Int(2), Value::Int(8)],
+            )],
+        );
+        assert_eq!(rows[0].get("m").unwrap(), &Value::Int(2));
+
+        let rows = run_cap_with_project(
+            &exe,
+            &["m"],
+            vec![("m".into(), "max".into(), 0.0)],
+            vec![(
+                "m".into(),
+                vec![Value::Int(5), Value::Int(2), Value::Int(8)],
+            )],
+        );
+        assert_eq!(rows[0].get("m").unwrap(), &Value::Int(8));
+    }
+
+    #[test]
+    fn cap_addall_keeps_full_list() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["a"],
+            vec![("a".into(), "addAll".into(), 0.0)],
+            vec![("a".into(), vec![Value::Int(1), Value::Int(2)])],
+        );
+        match rows[0].get("a").unwrap() {
+            Value::List(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_assign_keeps_full_list() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["a"],
+            vec![("a".into(), "assign".into(), 0.0)],
+            vec![("a".into(), vec![Value::Int(99)])],
+        );
+        match rows[0].get("a").unwrap() {
+            Value::List(items) => assert_eq!(items.len(), 1),
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_and_or_boolean_reductions() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["b"],
+            vec![("b".into(), "and".into(), 1.0)],
+            vec![(
+                "b".into(),
+                vec![Value::Bool(true), Value::Bool(true), Value::Int(1)],
+            )],
+        );
+        assert_eq!(rows[0].get("b").unwrap(), &Value::Bool(true));
+
+        let rows = run_cap_with_project(
+            &exe,
+            &["b"],
+            vec![("b".into(), "and".into(), 1.0)],
+            vec![("b".into(), vec![Value::Bool(false), Value::Bool(true)])],
+        );
+        assert_eq!(rows[0].get("b").unwrap(), &Value::Bool(false));
+
+        let rows = run_cap_with_project(
+            &exe,
+            &["b"],
+            vec![("b".into(), "or".into(), 0.0)],
+            vec![("b".into(), vec![Value::Bool(false), Value::Int(0)])],
+        );
+        assert_eq!(rows[0].get("b").unwrap(), &Value::Bool(false));
+
+        let rows = run_cap_with_project(
+            &exe,
+            &["b"],
+            vec![("b".into(), "or".into(), 0.0)],
+            vec![("b".into(), vec![Value::Int(0), Value::Bool(true)])],
+        );
+        assert_eq!(rows[0].get("b").unwrap(), &Value::Bool(true));
+    }
+
+    #[test]
+    fn cap_unknown_reduction_falls_to_sum() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let rows = run_cap_with_project(
+            &exe,
+            &["u"],
+            vec![("u".into(), "wat".into(), 10.0)],
+            vec![(
+                "u".into(),
+                vec![Value::Int(1), Value::Int(2), Value::Int(3)],
+            )],
+        );
+        assert_eq!(rows[0].get("u").unwrap(), &Value::Int(16));
+    }
+
+    #[test]
+    fn cap_multi_key_yields_combined_map() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        exe.gremlin_side_effects
+            .borrow_mut()
+            .insert("__gremlin_agg_a".into(), Value::List(vec![Value::Int(1)]));
+        exe.gremlin_side_effects
+            .borrow_mut()
+            .insert("__gremlin_agg_b".into(), Value::List(vec![Value::Int(2)]));
+        let rows = run_cap(&exe, &["a", "b"], vec![]);
+        // Combined map column "a_b" should exist
+        let combined = rows[0].get("a_b").unwrap();
+        match combined {
+            Value::Map(m) => {
+                assert_eq!(m.len(), 2);
+                assert!(m.contains_key("a"));
+                assert!(m.contains_key("b"));
+            }
+            other => panic!("expected combined Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cap_with_stored_map_returns_it() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut m: indexmap::IndexMap<Box<str>, Value> = indexmap::IndexMap::new();
+        m.insert("k".into(), Value::Int(7));
+        exe.gremlin_side_effects
+            .borrow_mut()
+            .insert("__gremlin_agg_x".into(), Value::Map(m));
+        let rows = run_cap(&exe, &["x"], vec![]);
+        match rows[0].get("x").unwrap() {
+            Value::Map(m) => assert_eq!(m.get("k"), Some(&Value::Int(7))),
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+}

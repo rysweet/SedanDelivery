@@ -394,3 +394,468 @@ impl<'a> QueryExecutor<'a> {
             .unwrap_or(Value::Null))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::executor::budget::ExecutionBudget;
+    use crate::executor::engine::{ExecContext, MutationStats, QueryExecutor};
+    use crate::storage::{GraphStore, InMemoryGraphStore};
+    use indexmap::IndexMap;
+
+    fn make_store() -> InMemoryGraphStore {
+        let s = InMemoryGraphStore::new();
+        s.create_graph("g").unwrap();
+        s
+    }
+
+    fn alice(s: &InMemoryGraphStore) -> crate::storage::NodeId {
+        let mut p = IndexMap::new();
+        p.insert("name".into(), Value::Str("Alice".into()));
+        p.insert("age".into(), Value::Int(30));
+        s.create_node("g", vec!["Person".into()], p).unwrap()
+    }
+
+    fn make_cx<'a>(b: &'a mut ExecutionBudget, st: &'a mut MutationStats) -> ExecContext<'a> {
+        ExecContext {
+            graph: "g",
+            budget: b,
+            outer_rows: &[],
+            stats: st,
+        }
+    }
+
+    // ── apply_path_by_key ──────────────────────────────────────────
+
+    #[test]
+    fn apply_path_empty_key_returns_clone() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "", &Value::Int(7));
+        assert_eq!(r, Value::Int(7));
+    }
+
+    #[test]
+    fn apply_path_math_marker() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~math:_+_", &Value::Int(3));
+        assert_eq!(r, Value::Float(6.0));
+    }
+
+    #[test]
+    fn apply_path_select_map_marker() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let mut m: IndexMap<Box<str>, Value> = IndexMap::new();
+        m.insert("a".into(), Value::Int(1));
+        m.insert("b".into(), Value::Int(2));
+        m.insert("c".into(), Value::Int(3));
+        let r = exe.apply_path_by_key(&mut cx, "~select_map:a,c", &Value::Map(m));
+        match r {
+            Value::Map(m) => {
+                assert_eq!(m.len(), 2);
+                assert!(m.contains_key("a"));
+                assert!(m.contains_key("c"));
+                assert!(!m.contains_key("b"));
+            }
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_path_select_map_on_non_map_returns_null() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~select_map:a", &Value::Int(7));
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn apply_path_toupper_on_string() {
+        let s = make_store();
+        let nid = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~toupper:name", &Value::Node(nid));
+        assert_eq!(r, Value::Str("ALICE".into()));
+    }
+
+    #[test]
+    fn apply_path_tolower_on_string() {
+        let s = make_store();
+        let nid = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~tolower:name", &Value::Node(nid));
+        assert_eq!(r, Value::Str("alice".into()));
+    }
+
+    #[test]
+    fn apply_path_toupper_on_non_string_passthrough() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        // No node with "key" property → inner returns Null which is non-Str
+        let r = exe.apply_path_by_key(&mut cx, "~toupper:age", &Value::Int(99));
+        assert_eq!(r, Value::Int(99));
+    }
+
+    #[test]
+    fn apply_path_unfold_values_fold_on_list() {
+        let s = make_store();
+        let n1 = alice(&s);
+        let mut p = IndexMap::new();
+        p.insert("name".into(), Value::Str("Bob".into()));
+        let n2 = s.create_node("g", vec!["P".into()], p).unwrap();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let list = Value::List(vec![Value::Node(n1), Value::Node(n2)]);
+        let r = exe.apply_path_by_key(&mut cx, "~unfold_values_fold:name", &list);
+        match r {
+            Value::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert!(items.contains(&Value::Str("Alice".into())));
+                assert!(items.contains(&Value::Str("Bob".into())));
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_path_unfold_values_fold_on_non_list_passthrough() {
+        let s = make_store();
+        let nid = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~unfold_values_fold:name", &Value::Node(nid));
+        assert_eq!(r, Value::Str("Alice".into()));
+    }
+
+    #[test]
+    fn apply_path_label_on_node_and_edge() {
+        let s = make_store();
+        let n = alice(&s);
+        let e_src = s
+            .create_node("g", vec!["X".into()], IndexMap::new())
+            .unwrap();
+        let eid = s
+            .create_edge("g", n, e_src, "REL".into(), IndexMap::new())
+            .unwrap();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~label", &Value::Node(n));
+        assert_eq!(r, Value::Str("Person".into()));
+        let r = exe.apply_path_by_key(&mut cx, "label", &Value::Node(n));
+        assert_eq!(r, Value::Str("Person".into()));
+        let r = exe.apply_path_by_key(&mut cx, "T.label", &Value::Edge(eid));
+        assert_eq!(r, Value::Str("REL".into()));
+    }
+
+    #[test]
+    fn apply_path_label_on_unlabelled_node_is_null() {
+        let s = make_store();
+        let n = s.create_node("g", vec![], IndexMap::new()).unwrap();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~label", &Value::Node(n));
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn apply_path_label_on_non_element_clones() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let r = exe.apply_path_by_key(&mut cx, "~label", &Value::Int(42));
+        assert_eq!(r, Value::Int(42));
+    }
+
+    #[test]
+    fn apply_path_id_on_node_and_edge() {
+        let s = make_store();
+        let n = alice(&s);
+        let n2 = alice(&s);
+        let eid = s
+            .create_edge("g", n, n2, "K".into(), IndexMap::new())
+            .unwrap();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "~id", &Value::Node(n)),
+            Value::Int(n.0 as i64)
+        );
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "id", &Value::Edge(eid)),
+            Value::Int(eid.0 as i64)
+        );
+        // Non-node/edge passes through.
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "~id", &Value::Str("x".into())),
+            Value::Str("x".into())
+        );
+    }
+
+    #[test]
+    fn apply_path_key_value_t_tokens() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let mut m: IndexMap<Box<str>, Value> = IndexMap::new();
+        m.insert("~key".into(), Value::Str("k1".into()));
+        m.insert("~value".into(), Value::Int(99));
+        let mv = Value::Map(m);
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "~key", &mv),
+            Value::Str("k1".into())
+        );
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "T.value", &mv),
+            Value::Int(99)
+        );
+        // Map without ~key/~value falls back to clone of the whole map.
+        let empty = Value::Map(IndexMap::new());
+        assert!(matches!(
+            exe.apply_path_by_key(&mut cx, "~key", &empty),
+            Value::Map(_)
+        ));
+    }
+
+    #[test]
+    fn apply_path_key_on_non_map_clones() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "~value", &Value::Int(5)),
+            Value::Int(5)
+        );
+    }
+
+    #[test]
+    fn apply_path_property_access_on_node() {
+        let s = make_store();
+        let n = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "name", &Value::Node(n)),
+            Value::Str("Alice".into())
+        );
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "missing", &Value::Node(n)),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn apply_path_property_access_on_edge() {
+        let s = make_store();
+        let a = alice(&s);
+        let b = alice(&s);
+        let mut p = IndexMap::new();
+        p.insert("w".into(), Value::Int(7));
+        let eid = s.create_edge("g", a, b, "K".into(), p).unwrap();
+        let exe = QueryExecutor::new(&s);
+        let mut bg = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut bg, &mut st);
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "w", &Value::Edge(eid)),
+            Value::Int(7)
+        );
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "missing", &Value::Edge(eid)),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn apply_path_property_on_scalar_passes_through() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        assert_eq!(
+            exe.apply_path_by_key(&mut cx, "name", &Value::Str("hi".into())),
+            Value::Str("hi".into())
+        );
+    }
+
+    // ── resolve_prop_on_value_for_filter ───────────────────────────
+
+    #[test]
+    fn resolve_filter_empty_name_clones() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "", &Value::Int(7))
+            .unwrap();
+        assert_eq!(r, Value::Int(7));
+    }
+
+    #[test]
+    fn resolve_filter_select_map_marker() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut m: IndexMap<Box<str>, Value> = IndexMap::new();
+        m.insert("a".into(), Value::Int(1));
+        m.insert("b".into(), Value::Int(2));
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "~select_map:a", &Value::Map(m))
+            .unwrap();
+        match r {
+            Value::Map(m) => assert_eq!(m.len(), 1),
+            other => panic!("expected Map, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_filter_label_t_token_node_and_edge() {
+        let s = make_store();
+        let n = alice(&s);
+        let n2 = alice(&s);
+        let eid = s
+            .create_edge("g", n, n2, "REL".into(), IndexMap::new())
+            .unwrap();
+        let exe = QueryExecutor::new(&s);
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "~label", &Value::Node(n))
+            .unwrap();
+        assert_eq!(r, Value::Str("Person".into()));
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "T.label", &Value::Edge(eid))
+            .unwrap();
+        assert_eq!(r, Value::Str("REL".into()));
+    }
+
+    #[test]
+    fn resolve_filter_label_on_unlabelled_node_is_null() {
+        let s = make_store();
+        let n = s.create_node("g", vec![], IndexMap::new()).unwrap();
+        let exe = QueryExecutor::new(&s);
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "~label", &Value::Node(n))
+            .unwrap();
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn resolve_filter_id_t_token() {
+        let s = make_store();
+        let n = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "~id", &Value::Node(n))
+            .unwrap();
+        assert_eq!(r, Value::Int(n.0 as i64));
+    }
+
+    #[test]
+    fn resolve_filter_property_node_and_map() {
+        let s = make_store();
+        let n = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "name", &Value::Node(n))
+            .unwrap();
+        assert_eq!(r, Value::Str("Alice".into()));
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "missing", &Value::Node(n))
+            .unwrap();
+        assert_eq!(r, Value::Null);
+        let mut m: IndexMap<Box<str>, Value> = IndexMap::new();
+        m.insert("k".into(), Value::Int(7));
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "k", &Value::Map(m))
+            .unwrap();
+        assert_eq!(r, Value::Int(7));
+    }
+
+    #[test]
+    fn resolve_filter_property_scalar_clones() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let r = exe
+            .resolve_prop_on_value_for_filter("g", "x", &Value::Int(5))
+            .unwrap();
+        assert_eq!(r, Value::Int(5));
+    }
+
+    // ── split_prop_accessor ─────────────────────────────────────────
+
+    #[test]
+    fn split_prop_accessor_with_map_select() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let r = exe.split_prop_accessor("a__map_select__rest");
+        assert_eq!(r, Some(("a", "map_select__rest")));
+    }
+
+    #[test]
+    fn split_prop_accessor_simple_double_underscore() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let r = exe.split_prop_accessor("alias__field");
+        assert_eq!(r, Some(("alias", "field")));
+    }
+
+    #[test]
+    fn split_prop_accessor_returns_none() {
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        assert_eq!(exe.split_prop_accessor("noseparator"), None);
+    }
+
+    // ── resolve_label_alias ─────────────────────────────────────────
+
+    #[test]
+    fn resolve_label_alias_matches_path_alias() {
+        use crate::ast::Identifier;
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let aliases = vec![Identifier::new("v_2"), Identifier::new("v_1")];
+        let row = Row::new();
+        let r = exe.resolve_label_alias("v_2", &aliases, &row);
+        assert_eq!(r, Some("v_2".to_string()));
+        let r = exe.resolve_label_alias("missing", &aliases, &row);
+        assert_eq!(r, None);
+    }
+}

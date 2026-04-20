@@ -263,3 +263,268 @@ impl<'a> QueryExecutor<'a> {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Direction, Identifier, RelType};
+    use crate::executor::budget::ExecutionBudget;
+    use crate::executor::engine::{ExecContext, MutationStats, QueryExecutor};
+    use crate::storage::{GraphStore, InMemoryGraphStore};
+    use indexmap::IndexMap;
+
+    fn chain(n: usize) -> (InMemoryGraphStore, Vec<crate::storage::NodeId>) {
+        let s = InMemoryGraphStore::new();
+        s.create_graph("g").unwrap();
+        let mut ids = vec![];
+        for i in 0..n {
+            let mut p = IndexMap::new();
+            p.insert("idx".to_string(), Value::Int(i as i64));
+            ids.push(s.create_node("g", vec!["N".into()], p).unwrap());
+        }
+        for i in 0..n - 1 {
+            s.create_edge("g", ids[i], ids[i + 1], "NEXT".into(), IndexMap::new())
+                .unwrap();
+        }
+        (s, ids)
+    }
+
+    fn make_seeds(seed_alias: &str, ids: &[crate::storage::NodeId]) -> Vec<Row> {
+        ids.iter()
+            .map(|nid| {
+                let mut r = Row::new();
+                r.insert(seed_alias.to_string(), Value::Node(*nid));
+                r
+            })
+            .collect()
+    }
+
+    fn make_simple_expand_body(rel: &str, src: &str, dst: &str) -> Operator {
+        Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new(rel)],
+            src_alias: Identifier::new(src),
+            rel_alias: None,
+            dst_alias: Identifier::new(dst),
+            child: Box::new(Operator::SingleRow),
+        }
+    }
+
+    #[test]
+    fn try_counting_returns_none_when_pop_origins_set() {
+        let (s, ids) = chain(3);
+        let exe = QueryExecutor::new(&s);
+        let body = make_simple_expand_body("NEXT", "n", "m");
+        let seeds = make_seeds("n", &ids[..1]);
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
+        let pop = vec![("shadow".to_string(), "n".to_string())];
+        let r = exe
+            .try_repeat_counting(
+                &mut cx,
+                &body,
+                &seeds,
+                Some(2),
+                2,
+                &None,
+                false,
+                false,
+                &None,
+                &None,
+                false,
+                &None,
+                &[],
+                &pop,
+            )
+            .unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn try_counting_simple_no_emit_two_hops() {
+        let (s, ids) = chain(5);
+        let exe = QueryExecutor::new(&s);
+        let body = make_simple_expand_body("NEXT", "n", "m");
+        let seeds = make_seeds("n", &ids[..1]);
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
+        let r = exe
+            .try_repeat_counting(
+                &mut cx,
+                &body,
+                &seeds,
+                Some(2),
+                2,
+                &None,
+                false,
+                false,
+                &None,
+                &Some(("m".to_string(), "n".to_string())),
+                false,
+                &None,
+                &[],
+                &[],
+            )
+            .unwrap();
+        let rows = r.expect("counting fast path should succeed");
+        assert_eq!(rows.len(), 1);
+    }
+
+    #[test]
+    fn try_counting_empty_seeds_returns_empty() {
+        let s = InMemoryGraphStore::new();
+        s.create_graph("g").unwrap();
+        let exe = QueryExecutor::new(&s);
+        let body = make_simple_expand_body("NEXT", "n", "m");
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
+        let r = exe
+            .try_repeat_counting(
+                &mut cx,
+                &body,
+                &[],
+                Some(1),
+                1,
+                &None,
+                false,
+                false,
+                &None,
+                &None,
+                false,
+                &None,
+                &[],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(r, Some(vec![]));
+    }
+
+    #[test]
+    fn try_counting_emit_branch_collects_intermediate() {
+        let (s, ids) = chain(4);
+        let exe = QueryExecutor::new(&s);
+        let body = make_simple_expand_body("NEXT", "n", "m");
+        let seeds = make_seeds("n", &ids[..1]);
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
+        let r = exe
+            .try_repeat_counting(
+                &mut cx,
+                &body,
+                &seeds,
+                Some(2),
+                2,
+                &None,
+                true,  // emit
+                false, // emit_before = post-emit
+                &None,
+                &Some(("m".to_string(), "n".to_string())),
+                false,
+                &None,
+                &[],
+                &[],
+            )
+            .unwrap();
+        let rows = r.expect("counting emit path should succeed");
+        // post-emit collects after each iteration; 2 iterations × 1 row each = 2
+        assert!(!rows.is_empty());
+    }
+
+    #[test]
+    fn try_counting_emit_before_collects_initial() {
+        let (s, ids) = chain(3);
+        let exe = QueryExecutor::new(&s);
+        let body = make_simple_expand_body("NEXT", "n", "m");
+        let seeds = make_seeds("n", &ids[..1]);
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
+        let r = exe
+            .try_repeat_counting(
+                &mut cx,
+                &body,
+                &seeds,
+                Some(2),
+                2,
+                &None,
+                true, // emit
+                true, // emit_before
+                &None,
+                &Some(("m".to_string(), "n".to_string())),
+                false,
+                &None,
+                &[],
+                &[],
+            )
+            .unwrap();
+        let rows = r.expect("counting emit-before path should succeed");
+        assert!(!rows.is_empty());
+    }
+
+    #[test]
+    fn try_counting_with_loop_label_inserts_counter() {
+        let (s, ids) = chain(3);
+        let exe = QueryExecutor::new(&s);
+        let body = make_simple_expand_body("NEXT", "n", "m");
+        let seeds = make_seeds("n", &ids[..1]);
+        let mut budget = ExecutionBudget::unlimited();
+        let mut stats = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "g",
+            budget: &mut budget,
+            outer_rows: &[],
+            stats: &mut stats,
+        };
+        let r = exe
+            .try_repeat_counting(
+                &mut cx,
+                &body,
+                &seeds,
+                Some(1),
+                1,
+                &None,
+                true,
+                true,
+                &None,
+                &Some(("m".to_string(), "n".to_string())),
+                false,
+                &Some("lbl".into()),
+                &[],
+                &[],
+            )
+            .unwrap();
+        let rows = r.expect("counting with label should succeed");
+        assert!(rows
+            .iter()
+            .any(|r| r.contains_key("__gremlin_loop_count_lbl")));
+    }
+}
