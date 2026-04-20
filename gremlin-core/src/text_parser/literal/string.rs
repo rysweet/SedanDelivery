@@ -46,3 +46,109 @@ pub(crate) fn normalize_gtype(s: &str) -> String {
         other => other.to_lowercase(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unquote_double_quoted() {
+        assert_eq!(unquote("\"hello\""), "hello");
+    }
+    #[test]
+    fn unquote_double_quoted_with_escape() {
+        assert_eq!(unquote("\"a\\\"b\""), "a\"b");
+    }
+    #[test]
+    fn unquote_double_quoted_with_backslash() {
+        assert_eq!(unquote("\"a\\\\b\""), "a\\b");
+    }
+    #[test]
+    fn unquote_single_quoted() {
+        assert_eq!(unquote("'hello'"), "hello");
+    }
+    #[test]
+    fn unquote_single_quoted_with_escape() {
+        assert_eq!(unquote("'a\\'b'"), "a'b");
+    }
+    #[test]
+    fn unquote_single_quoted_with_backslash() {
+        assert_eq!(unquote("'a\\\\b'"), "a\\b");
+    }
+    #[test]
+    fn unquote_unquoted_passthrough() {
+        assert_eq!(unquote("nope"), "nope");
+    }
+    #[test]
+    fn unquote_empty_passthrough() {
+        assert_eq!(unquote(""), "");
+    }
+    #[test]
+    fn unquote_only_one_quote_passthrough() {
+        assert_eq!(unquote("\""), "\"");
+    }
+
+    #[test]
+    fn resolve_constant_dunder_form() {
+        assert_eq!(resolve_constant_traversal("__.constant(\"X\")"), "X");
+    }
+    #[test]
+    fn resolve_constant_bare_form() {
+        assert_eq!(resolve_constant_traversal("constant(\"Y\")"), "Y");
+    }
+    #[test]
+    fn resolve_constant_single_quoted() {
+        assert_eq!(resolve_constant_traversal("constant('Z')"), "Z");
+    }
+    #[test]
+    fn resolve_constant_no_match_passthrough() {
+        assert_eq!(resolve_constant_traversal("foo(\"bar\")"), "foo(\"bar\")");
+    }
+    #[test]
+    fn resolve_constant_no_close_paren_passthrough() {
+        // Missing trailing ')' — falls back to original string.
+        assert_eq!(
+            resolve_constant_traversal("constant(\"X\""),
+            "constant(\"X\""
+        );
+    }
+
+    #[test]
+    fn normalize_gtype_string_variants() {
+        assert_eq!(normalize_gtype("STRING"), "string");
+        assert_eq!(normalize_gtype("Java_Lang_String"), "string");
+    }
+    #[test]
+    fn normalize_gtype_int_variants() {
+        assert_eq!(normalize_gtype("INT"), "integer");
+        assert_eq!(normalize_gtype("INTEGER"), "integer");
+        assert_eq!(normalize_gtype("JAVA_LANG_INTEGER"), "integer");
+    }
+    #[test]
+    fn normalize_gtype_long_double_float_bool() {
+        assert_eq!(normalize_gtype("LONG"), "long");
+        assert_eq!(normalize_gtype("DOUBLE"), "double");
+        assert_eq!(normalize_gtype("FLOAT"), "float");
+        assert_eq!(normalize_gtype("BOOLEAN"), "boolean");
+    }
+    #[test]
+    fn normalize_gtype_collection() {
+        assert_eq!(normalize_gtype("MAP"), "map");
+        assert_eq!(normalize_gtype("LIST"), "list");
+        assert_eq!(normalize_gtype("SET"), "set");
+    }
+    #[test]
+    fn normalize_gtype_short_byte() {
+        assert_eq!(normalize_gtype("SHORT"), "short");
+        assert_eq!(normalize_gtype("BYTE"), "byte");
+    }
+    #[test]
+    fn normalize_gtype_bigint_bigdec() {
+        assert_eq!(normalize_gtype("BIGINTEGER"), "biginteger");
+        assert_eq!(normalize_gtype("BIGDECIMAL"), "bigdecimal");
+    }
+    #[test]
+    fn normalize_gtype_unknown_lowercased() {
+        assert_eq!(normalize_gtype("UnknownType"), "unknowntype");
+    }
+}
