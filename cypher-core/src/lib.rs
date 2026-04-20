@@ -76,6 +76,9 @@ mod coverage_targeted_tests10;
 #[cfg(test)]
 mod coverage_targeted_tests11;
 
+#[cfg(test)]
+mod coverage_targeted_tests12;
+
 pub mod ast;
 pub mod changelog;
 pub mod config;

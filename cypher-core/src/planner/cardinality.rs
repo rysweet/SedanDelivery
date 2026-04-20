@@ -258,3 +258,364 @@ pub fn collect_graph_statistics(
         edges_per_type: HashMap::new(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Direction, Identifier, RelType};
+
+    fn empty_stats() -> GraphStatistics {
+        GraphStatistics {
+            total_nodes: 0,
+            total_edges: 0,
+            nodes_per_label: HashMap::new(),
+            edges_per_type: HashMap::new(),
+        }
+    }
+
+    fn stats_with_nodes(n: u64) -> GraphStatistics {
+        let mut s = empty_stats();
+        s.total_nodes = n;
+        s.total_edges = n * 2;
+        s
+    }
+
+    fn id(s: &str) -> Identifier {
+        Identifier::new(s)
+    }
+
+    fn ns(name: &str) -> Operator {
+        Operator::NodeScan {
+            label: None,
+            alias: id(name),
+        }
+    }
+
+    #[test]
+    fn avg_degree_zero_nodes_returns_one() {
+        assert_eq!(empty_stats().avg_degree(), 1.0);
+    }
+
+    #[test]
+    fn avg_degree_normal() {
+        let s = stats_with_nodes(10);
+        assert_eq!(s.avg_degree(), 2.0);
+    }
+
+    #[test]
+    fn avg_degree_for_type_uses_edge_count_for_type() {
+        let mut s = stats_with_nodes(10);
+        s.edges_per_type.insert("FOO".to_string(), 30);
+        assert_eq!(s.avg_degree_for_type("FOO"), 3.0);
+    }
+
+    #[test]
+    fn avg_degree_for_type_zero_nodes() {
+        assert_eq!(empty_stats().avg_degree_for_type("X"), 1.0);
+    }
+
+    #[test]
+    fn avg_degree_for_type_falls_back_to_total() {
+        let s = stats_with_nodes(10);
+        // No specific entry for "BAR" → falls back to total_edges
+        assert_eq!(s.avg_degree_for_type("BAR"), 2.0);
+    }
+
+    #[test]
+    fn estimate_singlerow() {
+        let est = estimate_cardinality(&Operator::SingleRow, &empty_stats());
+        assert_eq!(est.values().next().copied(), Some(1.0));
+    }
+
+    #[test]
+    fn estimate_node_scan_no_label_uses_total() {
+        let s = stats_with_nodes(50);
+        let op = ns("n");
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(50.0));
+    }
+
+    #[test]
+    fn estimate_node_scan_with_label() {
+        let mut s = empty_stats();
+        s.nodes_per_label.insert("P".to_string(), 17);
+        let op = Operator::NodeScan {
+            label: Some(crate::ast::Label::new("P")),
+            alias: id("n"),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(17.0));
+    }
+
+    #[test]
+    fn estimate_index_scan_uses_label_count() {
+        let mut s = empty_stats();
+        s.nodes_per_label.insert("P".to_string(), 100);
+        let op = Operator::IndexScan {
+            label: crate::ast::Label::new("P"),
+            property: "k".to_string(),
+            value: None,
+            alias: id("n"),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(10.0));
+    }
+
+    #[test]
+    fn estimate_node_by_id_seek() {
+        let op = Operator::NodeByIdSeek {
+            id_expr: Expr::Integer(1),
+            alias: id("n"),
+        };
+        let est = estimate_cardinality(&op, &empty_stats());
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(1.0));
+    }
+
+    #[test]
+    fn estimate_filter_applies_selectivity() {
+        let s = stats_with_nodes(100);
+        let op = Operator::Filter {
+            predicate: Expr::Bool(true),
+            child: Box::new(ns("n")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(10.0));
+    }
+
+    #[test]
+    fn estimate_expand_with_single_rel_type() {
+        let s = stats_with_nodes(100);
+        let op = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: id("a"),
+            rel_alias: None,
+            dst_alias: id("b"),
+            child: Box::new(ns("a")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        // 100 * avg_degree_for_type=2 = 200
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(200.0));
+    }
+
+    #[test]
+    fn estimate_expand_multi_rel_uses_avg() {
+        let s = stats_with_nodes(50);
+        let op = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R1"), RelType::new("R2")],
+            src_alias: id("a"),
+            rel_alias: None,
+            dst_alias: id("b"),
+            child: Box::new(ns("a")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(100.0));
+    }
+
+    #[test]
+    fn estimate_varlen_expand() {
+        let s = stats_with_nodes(10);
+        let op = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            min: 1,
+            max: 3,
+            src_alias: id("a"),
+            path_alias: None,
+            path_mode: false,
+            dst_alias: id("b"),
+            child: Box::new(ns("a")),
+            rel_props: None,
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert!(*est.get(&(&op as *const _)).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn estimate_limit_caps_child() {
+        let s = stats_with_nodes(1000);
+        let op = Operator::Limit {
+            count: Expr::Integer(5),
+            child: Box::new(ns("n")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(5.0));
+    }
+
+    #[test]
+    fn estimate_limit_non_int_uses_default() {
+        let s = stats_with_nodes(1000);
+        let op = Operator::Limit {
+            count: Expr::Variable(id("p")),
+            child: Box::new(ns("n")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(100.0));
+    }
+
+    #[test]
+    fn estimate_skip_subtracts() {
+        let s = stats_with_nodes(100);
+        let op = Operator::Skip {
+            count: Expr::Integer(20),
+            child: Box::new(ns("n")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(80.0));
+    }
+
+    #[test]
+    fn estimate_skip_non_int_subtracts_default() {
+        let s = stats_with_nodes(100);
+        let op = Operator::Skip {
+            count: Expr::Variable(id("p")),
+            child: Box::new(ns("n")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(90.0));
+    }
+
+    #[test]
+    fn estimate_distinct_reduces() {
+        let s = stats_with_nodes(100);
+        let op = Operator::Distinct {
+            child: Box::new(ns("n")),
+            by_key: None,
+            productive: false,
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(80.0));
+    }
+
+    #[test]
+    fn estimate_aggregate_collapses() {
+        let s = stats_with_nodes(100);
+        let op = Operator::Aggregate {
+            keys: vec![],
+            aggregations: vec![],
+            child: Box::new(ns("n")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(10.0));
+    }
+
+    #[test]
+    fn estimate_unwind_multiplies() {
+        let s = stats_with_nodes(10);
+        let op = Operator::Unwind {
+            list_expr: Expr::List(vec![]),
+            alias: id("x"),
+            child: Box::new(ns("n")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(50.0));
+    }
+
+    #[test]
+    fn estimate_union_sums() {
+        let s = stats_with_nodes(10);
+        let op = Operator::Union {
+            left: Box::new(ns("a")),
+            right: Box::new(ns("b")),
+            all: true,
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(20.0));
+    }
+
+    #[test]
+    fn estimate_apply_multiplies() {
+        let s = stats_with_nodes(10);
+        let op = Operator::Apply {
+            outer: Box::new(ns("a")),
+            inner: Box::new(ns("b")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(100.0));
+    }
+
+    #[test]
+    fn estimate_left_outer_apply() {
+        let s = stats_with_nodes(10);
+        let op = Operator::LeftOuterApply {
+            preserved: Box::new(ns("a")),
+            optional_pattern: Box::new(ns("b")),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(100.0));
+    }
+
+    #[test]
+    fn estimate_create_no_child() {
+        let op = Operator::Create {
+            patterns: vec![],
+            child: None,
+        };
+        let est = estimate_cardinality(&op, &empty_stats());
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(1.0));
+    }
+
+    #[test]
+    fn estimate_create_with_child() {
+        let s = stats_with_nodes(7);
+        let op = Operator::Create {
+            patterns: vec![],
+            child: Some(Box::new(ns("n"))),
+        };
+        let est = estimate_cardinality(&op, &s);
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(7.0));
+    }
+
+    #[test]
+    fn estimate_shortest_path_one() {
+        let op = Operator::ShortestPath {
+            src_alias: id("a"),
+            dst_alias: id("b"),
+            rel_types: vec![],
+            direction: Direction::Outgoing,
+            min: 1,
+            max: 5,
+            path_alias: id("p"),
+            all_paths: false,
+        };
+        let est = estimate_cardinality(&op, &empty_stats());
+        assert_eq!(est.get(&(&op as *const _)).copied(), Some(1.0));
+    }
+
+    #[test]
+    fn estimate_pass_through_operators() {
+        let s = stats_with_nodes(7);
+        for op in [
+            Operator::Project {
+                items: vec![],
+                child: Box::new(ns("n")),
+            },
+            Operator::Sort {
+                items: vec![],
+                gremlin_order: false,
+                child: Box::new(ns("n")),
+            },
+            Operator::Set {
+                items: vec![],
+                child: Box::new(ns("n")),
+            },
+            Operator::Remove {
+                items: vec![],
+                child: Box::new(ns("n")),
+            },
+            Operator::Delete {
+                exprs: vec![],
+                detach: false,
+                child: Box::new(ns("n")),
+            },
+            Operator::ProduceResults {
+                columns: vec![],
+                child: Box::new(ns("n")),
+            },
+        ] {
+            let est = estimate_cardinality(&op, &s);
+            assert_eq!(est.get(&(&op as *const _)).copied(), Some(7.0));
+        }
+    }
+}

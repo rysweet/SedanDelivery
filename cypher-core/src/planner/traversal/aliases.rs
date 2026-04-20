@@ -324,4 +324,398 @@ mod tests {
         assert!(v.contains(&"a".to_string()));
         assert!(v.contains(&"b".to_string()));
     }
+
+    // ── Extended coverage for the remaining Operator variants ──────────────
+
+    use crate::ast::{Direction, RelType};
+    use crate::planner::operators::aggregation::AggFunction;
+    use crate::planner::operators::Operator as Op;
+
+    fn boxed(op: Op) -> Box<Op> {
+        Box::new(op)
+    }
+
+    #[test]
+    fn project_uses_alias_or_derived_name() {
+        let op = Op::Project {
+            items: vec![
+                (Expr::Variable(id("n")), None),
+                (Expr::Integer(1), Some(id("one"))),
+                (
+                    Expr::Property(Box::new(Expr::Variable(id("n"))), "name".into()),
+                    None,
+                ),
+                (Expr::Integer(0), None), // no alias and no derivable name
+            ],
+            child: boxed(ns("__hidden")),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"n".to_string()));
+        assert!(v.contains(&"one".to_string()));
+        assert!(v.contains(&"n.name".to_string()));
+        // child alias does NOT propagate through Project (new scope)
+        assert!(!v.iter().any(|a| a == "__hidden"));
+    }
+
+    #[test]
+    fn aggregate_exposes_keys_and_aggregations() {
+        let op = Op::Aggregate {
+            keys: vec![Expr::Variable(id("k")), Expr::Integer(1)],
+            aggregations: vec![(
+                AggFunction::Count,
+                Expr::Variable(id("k")),
+                None,
+                false,
+                id("cnt"),
+            )],
+            child: boxed(ns("n")),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"k".to_string()));
+        assert!(v.contains(&"cnt".to_string()));
+    }
+
+    #[test]
+    fn call_yields_with_and_without_alias() {
+        let op = Op::Call {
+            procedure: "p".into(),
+            args: vec![],
+            yield_items: vec![(id("a"), None), (id("b"), Some(id("bb")))],
+            yield_star: false,
+            standalone: false,
+            child: Some(boxed(ns("seed"))),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"seed".to_string()));
+        assert!(v.contains(&"a".to_string()));
+        assert!(v.contains(&"bb".to_string()));
+    }
+
+    #[test]
+    fn shortest_path_exposes_path_and_endpoints() {
+        let op = Op::ShortestPath {
+            src_alias: id("a"),
+            dst_alias: id("b"),
+            rel_types: vec![],
+            direction: Direction::Outgoing,
+            min: 1,
+            max: 5,
+            path_alias: id("p"),
+            all_paths: false,
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"a".to_string()));
+        assert!(v.contains(&"b".to_string()));
+        assert!(v.contains(&"p".to_string()));
+    }
+
+    #[test]
+    fn union_combines_visible_from_both_sides() {
+        let op = Op::Union {
+            left: boxed(ns("a")),
+            right: boxed(ns("b")),
+            all: true,
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"a".to_string()));
+        assert!(v.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn create_appends_named_pattern_aliases() {
+        use crate::planner::operators::mutation::CreatePattern;
+        let op = Op::Create {
+            patterns: vec![CreatePattern {
+                nodes: vec![(Some(id("n")), vec![Label::new("L")], vec![])],
+                edges: vec![(
+                    Some(id("r")),
+                    id("n"),
+                    id("n"),
+                    RelType::new("R"),
+                    Direction::Outgoing,
+                    vec![],
+                )],
+            }],
+            child: Some(boxed(ns("seed"))),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"seed".to_string()));
+        assert!(v.contains(&"n".to_string()));
+        assert!(v.contains(&"r".to_string()));
+    }
+
+    #[test]
+    fn merge_and_merge_relationship_expose_aliases() {
+        let m = Op::Merge {
+            node_alias: Some(id("m")),
+            labels: vec![],
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: Some(boxed(ns("seed"))),
+        };
+        let v = collect_visible_aliases(&m);
+        assert!(v.contains(&"m".to_string()));
+        assert!(v.contains(&"seed".to_string()));
+
+        let mr = Op::MergeRelationship {
+            src_alias: id("s"),
+            dst_alias: id("d"),
+            rel_alias: Some(id("r")),
+            rel_type: RelType::new("R"),
+            direction: Direction::Outgoing,
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: boxed(ns("seed")),
+        };
+        let v = collect_visible_aliases(&mr);
+        assert!(v.contains(&"r".to_string()));
+        assert!(v.contains(&"seed".to_string()));
+    }
+
+    #[test]
+    fn foreach_does_not_leak_loop_var() {
+        let op = Op::ForEach {
+            variable: id("loopvar"),
+            list_expr: Expr::List(vec![]),
+            body: boxed(ns("body")),
+            child: boxed(ns("seed")),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"seed".to_string()));
+        assert!(!v.iter().any(|a| a == "loopvar"));
+    }
+
+    #[test]
+    fn repeat_choose_choosemap_passthrough() {
+        let r = Op::Repeat {
+            body: boxed(ns("body")),
+            times: None,
+            until: None,
+            emit: false,
+            emit_before: false,
+            emit_predicate: None,
+            remap: None,
+            times_before: false,
+            loop_label: None,
+            body_path_aliases: vec![],
+            pop_origins: vec![],
+            needs_path: false,
+            child: boxed(ns("seed")),
+        };
+        assert!(collect_visible_aliases(&r).contains(&"seed".to_string()));
+        let c = Op::Choose {
+            predicate: boxed(ns("p")),
+            if_true: boxed(ns("t")),
+            if_false: None,
+            child: boxed(ns("seed")),
+            true_alias: None,
+            false_alias: None,
+            output_alias: None,
+        };
+        assert!(collect_visible_aliases(&c).contains(&"seed".to_string()));
+        let cm = Op::ChooseMap {
+            selector: boxed(ns("s")),
+            selector_alias: id("s"),
+            options: vec![],
+            child: boxed(ns("seed")),
+            output_alias: None,
+        };
+        assert!(collect_visible_aliases(&cm).contains(&"seed".to_string()));
+    }
+
+    #[test]
+    fn coalesce_passes_through_child() {
+        let op = Op::Coalesce {
+            alternatives: vec![ns("alt")],
+            child: boxed(ns("seed")),
+        };
+        let v = collect_visible_aliases(&op);
+        assert!(v.contains(&"seed".to_string()));
+    }
+
+    #[test]
+    fn gremlin_path_yields_path_alias() {
+        let op = Op::GremlinPath {
+            child: boxed(ns("seed")),
+            path_aliases: vec![],
+            by_keys: vec![],
+            productive: false,
+            from_label: None,
+            to_label: None,
+        };
+        assert_eq!(collect_visible_aliases(&op), vec!["path".to_string()]);
+    }
+
+    #[test]
+    fn gremlin_tree_match_select_group_project_sample_etc() {
+        use crate::planner::operators::gremlin_types::GremlinSelectTraversal;
+        let t = Op::GremlinTree {
+            child: boxed(ns("seed")),
+            path_aliases: vec![],
+            side_effect_key: None,
+            alias: id("tree"),
+        };
+        assert!(collect_visible_aliases(&t).contains(&"tree".to_string()));
+
+        let m = Op::GremlinMatch {
+            patterns: vec![],
+            pattern_labels: vec![],
+            label_map: vec![],
+            result_alias: id("r"),
+            child: boxed(ns("seed")),
+        };
+        assert!(collect_visible_aliases(&m).contains(&"seed".to_string()));
+
+        let sel = Op::GremlinSelect {
+            keys: vec![(id("a"), "outA".to_string()), (id("b"), "outB".to_string())],
+            by_traversals: vec![
+                None,
+                Some(GremlinSelectTraversal::Traversal {
+                    op: boxed(ns("byT")),
+                    out_alias: id("byT"),
+                }),
+            ],
+            productive: false,
+            pop: None,
+            label_stacks: vec![],
+            child: boxed(ns("seed")),
+        };
+        let v = collect_visible_aliases(&sel);
+        assert!(v.contains(&"outA".to_string()));
+        assert!(v.contains(&"outB".to_string()));
+
+        let g = Op::GremlinGroup {
+            key_expr: Expr::Null,
+            value_expr: Expr::Null,
+            agg_fn: AggFunction::Count,
+            alias: id("groupa"),
+            side_effect_key: None,
+            key_traversal: None,
+            value_traversal: None,
+            productive: false,
+            key_is_identity: false,
+            explicit_fold: false,
+            child: boxed(ns("seed")),
+        };
+        assert!(collect_visible_aliases(&g).contains(&"groupa".to_string()));
+
+        let p = Op::GremlinProject {
+            entries: vec![
+                ("k1".to_string(), ns("a"), id("a"), false),
+                ("k2".to_string(), ns("b"), id("b"), false),
+            ],
+            child: boxed(ns("seed")),
+            current_alias: id("cur"),
+            out_alias: id("o"),
+            productive: false,
+        };
+        let v = collect_visible_aliases(&p);
+        assert!(v.contains(&"k1".to_string()));
+        assert!(v.contains(&"k2".to_string()));
+
+        let sample = Op::GremlinSample {
+            count: 1,
+            weight: None,
+            seed: None,
+            child: boxed(ns("seed")),
+        };
+        assert!(collect_visible_aliases(&sample).contains(&"seed".to_string()));
+
+        let ms = Op::GremlinMapSlice {
+            alias: id("a"),
+            lo: 0,
+            hi: 1,
+            child: boxed(ns("seed")),
+        };
+        assert!(collect_visible_aliases(&ms).contains(&"seed".to_string()));
+
+        let sp = Op::GremlinSimplePath {
+            child: boxed(ns("seed")),
+            path_aliases: vec![],
+            by_keys: vec![],
+            from_label: None,
+            to_label: None,
+        };
+        assert!(collect_visible_aliases(&sp).contains(&"seed".to_string()));
+
+        let cp = Op::GremlinCyclicPath {
+            child: boxed(ns("seed")),
+            path_aliases: vec![],
+            by_keys: vec![],
+            from_label: None,
+            to_label: None,
+        };
+        assert!(collect_visible_aliases(&cp).contains(&"seed".to_string()));
+
+        let idx = Op::GremlinIndex {
+            child: boxed(ns("seed")),
+            alias: id("a"),
+            out_alias: id("o"),
+            with_map: false,
+        };
+        assert!(collect_visible_aliases(&idx).contains(&"seed".to_string()));
+
+        let bar = Op::GremlinBarrier {
+            child: boxed(ns("seed")),
+            current_alias: id("a"),
+            out_alias: id("o"),
+            norm_sack: false,
+            sack_merge_op: None,
+            with_bulk: false,
+        };
+        assert!(collect_visible_aliases(&bar).contains(&"seed".to_string()));
+    }
+
+    #[test]
+    fn produce_results_yields_empty() {
+        let op = Op::ProduceResults {
+            child: boxed(ns("seed")),
+            columns: vec![],
+        };
+        assert!(collect_visible_aliases(&op).is_empty());
+    }
+
+    #[test]
+    fn expand_and_varlen_expand_expose_dst_and_optional_rel() {
+        let e = Op::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            src_alias: id("a"),
+            rel_alias: Some(id("r")),
+            dst_alias: id("b"),
+            child: boxed(ns("seed")),
+        };
+        let v = collect_visible_aliases(&e);
+        assert!(v.contains(&"r".to_string()));
+        assert!(v.contains(&"b".to_string()));
+
+        let v_op = Op::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            min: 1,
+            max: 2,
+            src_alias: id("a"),
+            path_alias: Some(id("p")),
+            path_mode: false,
+            dst_alias: id("b"),
+            child: boxed(ns("seed")),
+            rel_props: None,
+        };
+        let v = collect_visible_aliases(&v_op);
+        assert!(v.contains(&"p".to_string()));
+        assert!(v.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn assemble_path_exposes_path_alias() {
+        let op = Op::AssemblePath {
+            child: boxed(ns("seed")),
+            path_alias: id("pp"),
+            node_aliases: vec![],
+            edge_aliases: vec![],
+        };
+        assert!(collect_visible_aliases(&op).contains(&"pp".to_string()));
+    }
 }

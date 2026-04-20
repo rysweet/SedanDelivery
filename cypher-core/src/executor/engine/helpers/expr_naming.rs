@@ -196,4 +196,184 @@ mod tests {
         };
         assert_eq!(expr_to_column_name(&expr), "count(n)");
     }
+
+    use crate::ast::{BinaryOp, Label, UnaryOp};
+
+    fn var(s: &str) -> Expr {
+        Expr::Variable(Identifier::new(s))
+    }
+
+    #[test]
+    fn expr_to_col_literals() {
+        assert_eq!(expr_to_column_name(&Expr::Integer(42)), "42");
+        assert_eq!(expr_to_column_name(&Expr::Float(1.5)), "1.5");
+        assert_eq!(expr_to_column_name(&Expr::Str("hi".into())), "'hi'");
+        assert_eq!(expr_to_column_name(&Expr::Bool(true)), "true");
+        assert_eq!(expr_to_column_name(&Expr::Null), "null");
+    }
+
+    #[test]
+    fn expr_to_col_function_distinct() {
+        let expr = Expr::FunctionCall {
+            name: "count".into(),
+            args: vec![var("n")],
+            distinct: true,
+        };
+        assert_eq!(expr_to_column_name(&expr), "count(DISTINCT n)");
+    }
+
+    #[test]
+    fn expr_to_col_unary_neg_not() {
+        let neg = Expr::UnaryOp {
+            op: UnaryOp::Neg,
+            expr: Box::new(var("x")),
+        };
+        assert_eq!(expr_to_column_name(&neg), "-x");
+        let not = Expr::UnaryOp {
+            op: UnaryOp::Not,
+            expr: Box::new(var("x")),
+        };
+        assert_eq!(expr_to_column_name(&not), "NOT x");
+    }
+
+    fn bin(op: BinaryOp, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp {
+            op,
+            left: Box::new(l),
+            right: Box::new(r),
+        }
+    }
+
+    #[test]
+    fn expr_to_col_all_binary_operators() {
+        for (op, sym) in [
+            (BinaryOp::Add, "+"),
+            (BinaryOp::Sub, "-"),
+            (BinaryOp::Mul, "*"),
+            (BinaryOp::Div, "/"),
+            (BinaryOp::Mod, "%"),
+            (BinaryOp::Eq, "="),
+            (BinaryOp::Neq, "<>"),
+            (BinaryOp::Lt, "<"),
+            (BinaryOp::Lte, "<="),
+            (BinaryOp::Gt, ">"),
+            (BinaryOp::Gte, ">="),
+            (BinaryOp::And, "AND"),
+            (BinaryOp::Or, "OR"),
+            (BinaryOp::Xor, "XOR"),
+            (BinaryOp::In, "IN"),
+            (BinaryOp::Contains, "CONTAINS"),
+            (BinaryOp::StartsWith, "STARTS WITH"),
+            (BinaryOp::EndsWith, "ENDS WITH"),
+            (BinaryOp::Pow, "^"),
+            (BinaryOp::RegexMatch, "=~"),
+            (BinaryOp::Concat, "++"),
+        ] {
+            let e = bin(op, var("a"), var("b"));
+            assert_eq!(expr_to_column_name(&e), format!("a {sym} b"));
+        }
+    }
+
+    #[test]
+    fn expr_to_col_binop_precedence_left_paren() {
+        // (a + b) * c — Add lower than Mul, left needs parens
+        let inner = bin(BinaryOp::Add, var("a"), var("b"));
+        let e = bin(BinaryOp::Mul, inner, var("c"));
+        assert_eq!(expr_to_column_name(&e), "(a + b) * c");
+    }
+
+    #[test]
+    fn expr_to_col_binop_precedence_right_paren_nonassoc() {
+        // a - (b - c) — same precedence, right needs parens for nonassoc Sub
+        let inner = bin(BinaryOp::Sub, var("b"), var("c"));
+        let e = bin(BinaryOp::Sub, var("a"), inner);
+        assert_eq!(expr_to_column_name(&e), "a - (b - c)");
+    }
+
+    #[test]
+    fn expr_to_col_property_on_subscript_wraps_parens() {
+        let sub = Expr::Subscript(Box::new(var("xs")), Box::new(Expr::Integer(0)));
+        let prop = Expr::Property(Box::new(sub), "k".into());
+        assert_eq!(expr_to_column_name(&prop), "(xs[0]).k");
+    }
+
+    #[test]
+    fn expr_to_col_listcomp_with_filter_and_map() {
+        let lc = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(var("xs")),
+            filter: Some(Box::new(bin(BinaryOp::Gt, var("x"), Expr::Integer(0)))),
+            map: Box::new(bin(BinaryOp::Mul, var("x"), Expr::Integer(2))),
+        };
+        assert_eq!(expr_to_column_name(&lc), "[x IN xs WHERE x > 0 | x * 2]");
+    }
+
+    #[test]
+    fn expr_to_col_listcomp_with_filter_only() {
+        let lc = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(var("xs")),
+            filter: Some(Box::new(bin(BinaryOp::Gt, var("x"), Expr::Integer(0)))),
+            map: Box::new(var("x")),
+        };
+        assert_eq!(expr_to_column_name(&lc), "[x IN xs WHERE x > 0]");
+    }
+
+    #[test]
+    fn expr_to_col_listcomp_no_filter() {
+        let lc = Expr::ListComp {
+            variable: Identifier::new("x"),
+            list: Box::new(var("xs")),
+            filter: None,
+            map: Box::new(var("x")),
+        };
+        assert_eq!(expr_to_column_name(&lc), "[x IN xs]");
+    }
+
+    #[test]
+    fn expr_to_col_isnull_isnotnull() {
+        assert_eq!(
+            expr_to_column_name(&Expr::IsNull(Box::new(var("x")))),
+            "x IS NULL"
+        );
+        assert_eq!(
+            expr_to_column_name(&Expr::IsNotNull(Box::new(var("x")))),
+            "x IS NOT NULL"
+        );
+    }
+
+    #[test]
+    fn expr_to_col_haslabel() {
+        let e = Expr::HasLabel(Box::new(var("n")), Label::new("Person"));
+        assert_eq!(expr_to_column_name(&e), "n:Person");
+    }
+
+    #[test]
+    fn expr_to_col_parameter() {
+        assert_eq!(expr_to_column_name(&Expr::Parameter("p".into())), "$p");
+    }
+
+    #[test]
+    fn expr_to_col_list_literal() {
+        let e = Expr::List(vec![Expr::Integer(1), Expr::Integer(2), Expr::Integer(3)]);
+        assert_eq!(expr_to_column_name(&e), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn expr_to_col_subscript() {
+        let e = Expr::Subscript(Box::new(var("xs")), Box::new(Expr::Integer(2)));
+        assert_eq!(expr_to_column_name(&e), "xs[2]");
+    }
+
+    #[test]
+    fn expr_to_col_reduce() {
+        let e = Expr::Reduce {
+            accumulator: Identifier::new("a"),
+            initial: Box::new(Expr::Integer(0)),
+            variable: Identifier::new("x"),
+            list: Box::new(var("xs")),
+            expression: Box::new(bin(BinaryOp::Add, var("a"), var("x"))),
+        };
+        assert_eq!(expr_to_column_name(&e), "reduce(a = 0, x IN xs | a + x)");
+    }
 }

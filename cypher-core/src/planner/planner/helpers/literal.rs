@@ -14,3 +14,45 @@ pub(crate) fn expr_to_literal_value(expr: &Expr) -> Option<Value> {
         _ => None, // Non-literal expressions can't be type-checked at plan time
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn literal_int() {
+        assert_eq!(
+            expr_to_literal_value(&Expr::Integer(42)),
+            Some(Value::Int(42))
+        );
+    }
+    #[test]
+    fn literal_float() {
+        assert_eq!(
+            expr_to_literal_value(&Expr::Float(1.5)),
+            Some(Value::Float(1.5))
+        );
+    }
+    #[test]
+    fn literal_str() {
+        assert_eq!(
+            expr_to_literal_value(&Expr::Str("x".into())),
+            Some(Value::Str("x".into()))
+        );
+    }
+    #[test]
+    fn literal_bool() {
+        assert_eq!(
+            expr_to_literal_value(&Expr::Bool(true)),
+            Some(Value::Bool(true))
+        );
+    }
+    #[test]
+    fn literal_null() {
+        assert_eq!(expr_to_literal_value(&Expr::Null), Some(Value::Null));
+    }
+    #[test]
+    fn non_literal_returns_none() {
+        let e = Expr::Variable(crate::ast::Identifier::new("x"));
+        assert_eq!(expr_to_literal_value(&e), None);
+    }
+}

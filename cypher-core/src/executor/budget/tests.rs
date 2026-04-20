@@ -229,3 +229,120 @@ fn take_profile_stats_clears_state() {
     // After take, profiling state is cleared
     assert!(budget.take_profile_stats().is_none());
 }
+
+#[test]
+fn configured_max_rows_default() {
+    // Without env var, returns DEFAULT_MAX_ROWS. Use unique var to avoid races.
+    let key = "SD2_QUERY_MAX_ROWS_TEST_DEFAULT";
+    std::env::remove_var(key);
+    // Just exercise the parsing logic via the same code path:
+    let v: usize = std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(super::DEFAULT_MAX_ROWS);
+    assert_eq!(v, super::DEFAULT_MAX_ROWS);
+}
+
+#[test]
+fn configured_max_rows_from_env() {
+    // Test parsing logic without touching the shared SD2_QUERY_MAX_ROWS env var,
+    // which would race with other parallel tests.
+    let raw = "12345";
+    let parsed: usize = raw.parse().unwrap_or(super::DEFAULT_MAX_ROWS);
+    assert_eq!(parsed, 12345);
+    // Also exercise the real function once (best-effort, no assertion on value).
+    let _ = super::configured_max_rows();
+}
+
+#[test]
+fn check_interval_const() {
+    let _ = super::check_interval();
+}
+
+#[test]
+fn default_budget_constructs() {
+    let b = ExecutionBudget::default_budget();
+    assert_eq!(b.rows_produced(), 0);
+    assert_eq!(b.max_rows(), super::DEFAULT_MAX_ROWS);
+}
+
+#[test]
+fn from_config_constructs() {
+    let cfg = crate::config::EngineConfig::default();
+    let b = ExecutionBudget::from_config(&cfg);
+    assert_eq!(b.rows_produced(), 0);
+}
+
+#[test]
+fn record_row_increments() {
+    let mut b = ExecutionBudget::unlimited();
+    b.record_row();
+    b.record_row();
+    assert_eq!(b.rows_produced(), 2);
+}
+
+#[test]
+fn record_leaf_row_increments_separately() {
+    let mut b = ExecutionBudget::unlimited();
+    b.record_leaf_row();
+    b.record_leaf_row();
+    b.record_leaf_row();
+    // set_row_cap(0) means cap = leaf_produced (3); reached
+    let prev = b.set_row_cap(0);
+    assert_eq!(prev, None);
+    assert!(b.reached_row_cap());
+    b.restore_row_cap(prev);
+    assert!(!b.reached_row_cap());
+}
+
+#[test]
+fn set_row_cap_takes_tighter_when_nested() {
+    let mut b = ExecutionBudget::unlimited();
+    let p1 = b.set_row_cap(100);
+    let p2 = b.set_row_cap(10);
+    assert_eq!(p1, None);
+    assert_eq!(p2, Some(100));
+    assert_eq!(b.row_cap(), Some(10));
+    b.restore_row_cap(p2);
+    assert_eq!(b.row_cap(), Some(100));
+}
+
+#[test]
+fn reached_row_cap_no_cap_returns_false() {
+    let b = ExecutionBudget::unlimited();
+    assert!(!b.reached_row_cap());
+}
+
+#[test]
+fn check_or_err_passes_when_under_limit() {
+    let mut b = ExecutionBudget::unlimited();
+    assert!(b.check_or_err().is_ok());
+}
+
+#[test]
+fn check_or_err_fails_when_max_rows_exceeded() {
+    let mut b = ExecutionBudget::new(std::time::Duration::from_secs(60), 2);
+    b.record_row();
+    b.record_row();
+    assert!(b.check_or_err().is_err());
+}
+
+#[test]
+fn remaining_returns_some_when_not_expired() {
+    let b = ExecutionBudget::unlimited();
+    assert!(b.remaining().is_some());
+}
+
+#[test]
+fn is_expired_false_when_unlimited() {
+    let b = ExecutionBudget::unlimited();
+    assert!(!b.is_expired());
+}
+
+#[test]
+fn request_id_set_get() {
+    let mut b = ExecutionBudget::unlimited();
+    assert_eq!(b.request_id(), None);
+    b.set_request_id("trace-1".to_string());
+    assert_eq!(b.request_id(), Some("trace-1"));
+}

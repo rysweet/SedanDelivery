@@ -312,4 +312,353 @@ mod tests {
         assert_eq!(value_to_expr(&Value::Bool(true)), Expr::Bool(true));
         assert_eq!(value_to_expr(&Value::Int(42)), Expr::Integer(42));
     }
+
+    // ── Extended coverage ────────────────────────────────────────────────
+
+    use crate::types::CypherDuration;
+
+    fn ctx() -> FilterRow<'static> {
+        HashMap::new()
+    }
+
+    #[test]
+    fn value_to_expr_covers_remaining_variants() {
+        match value_to_expr(&Value::Float(1.5)) {
+            Expr::Float(f) => assert_eq!(f, 1.5),
+            other => panic!("expected Float, got {other:?}"),
+        }
+        match value_to_expr(&Value::Str("hi".into())) {
+            Expr::Str(s) => assert_eq!(&*s, "hi"),
+            other => panic!("expected Str, got {other:?}"),
+        }
+        // List recurses into items.
+        match value_to_expr(&Value::List(vec![Value::Int(1), Value::Bool(false)])) {
+            Expr::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], Expr::Integer(1));
+                assert_eq!(items[1], Expr::Bool(false));
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+        // Map recurses into values and converts keys.
+        let mut m = indexmap::IndexMap::new();
+        m.insert("k".into(), Value::Int(5));
+        match value_to_expr(&Value::Map(m)) {
+            Expr::MapLiteral(entries) => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(&*entries[0].0, "k");
+                assert_eq!(entries[0].1, Expr::Integer(5));
+            }
+            other => panic!("expected MapLiteral, got {other:?}"),
+        }
+        // Other (e.g. Duration) collapses to Null.
+        let dur = Value::Duration(CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: 0,
+        });
+        assert_eq!(value_to_expr(&dur), Expr::Null);
+    }
+
+    #[test]
+    fn eq_neq_with_nan_yields_false_or_null_per_cypher() {
+        let nan = Value::Float(f64::NAN);
+        // Eq with NaN vs Int → cypher_eq returns Some(false) → Bool(false).
+        let r = eval_binary_values(crate::ast::BinaryOp::Eq, nan.clone(), Value::Int(1), &ctx())
+            .unwrap();
+        assert_eq!(r, Value::Bool(false));
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Neq,
+            nan.clone(),
+            Value::Int(1),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
+    }
+
+    #[test]
+    fn comparison_with_null_is_null() {
+        for op in [
+            crate::ast::BinaryOp::Lt,
+            crate::ast::BinaryOp::Lte,
+            crate::ast::BinaryOp::Gt,
+            crate::ast::BinaryOp::Gte,
+        ] {
+            let r = eval_binary_values(op, Value::Null, Value::Int(1), &ctx()).unwrap();
+            assert_eq!(r, Value::Null);
+            let r = eval_binary_values(op, Value::Int(1), Value::Null, &ctx()).unwrap();
+            assert_eq!(r, Value::Null);
+        }
+    }
+
+    #[test]
+    fn comparison_nan_numeric_is_false() {
+        let nan = Value::Float(f64::NAN);
+        let r = eval_binary_values(crate::ast::BinaryOp::Lt, nan.clone(), Value::Int(1), &ctx())
+            .unwrap();
+        assert_eq!(r, Value::Bool(false));
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Gte,
+            Value::Float(2.0),
+            nan.clone(),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
+    }
+
+    #[test]
+    fn comparison_nan_with_string_is_null() {
+        let nan = Value::Float(f64::NAN);
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Lt,
+            nan,
+            Value::Str("x".into()),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn integer_compare_lt_lte_gt_gte() {
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Lt,
+            Value::Int(1),
+            Value::Int(2),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Lte,
+            Value::Int(2),
+            Value::Int(2),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Gt,
+            Value::Int(3),
+            Value::Int(2),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Gte,
+            Value::Int(2),
+            Value::Int(3),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
+    }
+
+    #[test]
+    fn add_with_null_propagates_null() {
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Add,
+            Value::Null,
+            Value::Int(1),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn duration_add_and_sub_durations() {
+        let a = Value::Duration(CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: 1_000_000_000,
+        });
+        let b = Value::Duration(CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: 2_000_000_000,
+        });
+        let r =
+            eval_binary_values(crate::ast::BinaryOp::Add, a.clone(), b.clone(), &ctx()).unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 3_000_000_000);
+        } else {
+            panic!("expected Duration");
+        }
+        let r = eval_binary_values(crate::ast::BinaryOp::Sub, b, a, &ctx()).unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 1_000_000_000);
+        } else {
+            panic!("expected Duration");
+        }
+    }
+
+    #[test]
+    fn duration_mul_int_and_float_either_side() {
+        let dur = Value::Duration(CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: 1_000_000_000,
+        });
+        // dur * int
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Mul,
+            dur.clone(),
+            Value::Int(3),
+            &ctx(),
+        )
+        .unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 3_000_000_000);
+        } else {
+            panic!()
+        }
+        // int * dur
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Mul,
+            Value::Int(2),
+            dur.clone(),
+            &ctx(),
+        )
+        .unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 2_000_000_000);
+        } else {
+            panic!()
+        }
+        // dur * float
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Mul,
+            dur.clone(),
+            Value::Float(0.5),
+            &ctx(),
+        )
+        .unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 500_000_000);
+        } else {
+            panic!()
+        }
+        // float * dur
+        let r =
+            eval_binary_values(crate::ast::BinaryOp::Mul, Value::Float(2.0), dur, &ctx()).unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 2_000_000_000);
+        } else {
+            panic!()
+        }
+    }
+
+    #[test]
+    fn duration_div_and_null_propagation() {
+        let dur = Value::Duration(CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: 6_000_000_000,
+        });
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Div,
+            dur.clone(),
+            Value::Int(2),
+            &ctx(),
+        )
+        .unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 3_000_000_000);
+        } else {
+            panic!()
+        }
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Div,
+            dur.clone(),
+            Value::Float(2.0),
+            &ctx(),
+        )
+        .unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 3_000_000_000);
+        } else {
+            panic!()
+        }
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Div,
+            Value::Null,
+            Value::Int(1),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Null);
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Mul,
+            Value::Int(1),
+            Value::Null,
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Null);
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::Sub,
+            Value::Null,
+            Value::Int(1),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Null);
+    }
+
+    #[test]
+    fn in_operator_membership_and_null_handling() {
+        // present → true
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::In,
+            Value::Int(2),
+            Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(true));
+        // absent + no nulls → false
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::In,
+            Value::Int(9),
+            Value::List(vec![Value::Int(1), Value::Int(2)]),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
+        // absent + has null → null
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::In,
+            Value::Int(9),
+            Value::List(vec![Value::Int(1), Value::Null]),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Null);
+        // null lhs + empty list → false
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::In,
+            Value::Null,
+            Value::List(vec![]),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Bool(false));
+        // null lhs + non-empty list → null
+        let r = eval_binary_values(
+            crate::ast::BinaryOp::In,
+            Value::Null,
+            Value::List(vec![Value::Int(1)]),
+            &ctx(),
+        )
+        .unwrap();
+        assert_eq!(r, Value::Null);
+        // null rhs → null
+        let r = eval_binary_values(crate::ast::BinaryOp::In, Value::Int(1), Value::Null, &ctx())
+            .unwrap();
+        assert_eq!(r, Value::Null);
+    }
 }

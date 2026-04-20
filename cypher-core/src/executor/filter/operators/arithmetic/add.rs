@@ -61,3 +61,101 @@ pub(crate) fn add(lv: Value, rv: Value) -> Result<Value, GqlError> {
         })),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::CypherDuration;
+
+    #[test]
+    fn add_null_left() {
+        assert_eq!(add(Value::Null, Value::Int(1)).unwrap(), Value::Null);
+    }
+    #[test]
+    fn add_null_right() {
+        assert_eq!(add(Value::Int(1), Value::Null).unwrap(), Value::Null);
+    }
+    #[test]
+    fn add_int_int() {
+        assert_eq!(add(Value::Int(2), Value::Int(3)).unwrap(), Value::Int(5));
+    }
+    #[test]
+    fn add_int_overflow() {
+        assert!(add(Value::Int(i64::MAX), Value::Int(1)).is_err());
+    }
+    #[test]
+    fn add_float_float() {
+        assert_eq!(
+            add(Value::Float(1.5), Value::Float(2.5)).unwrap(),
+            Value::Float(4.0)
+        );
+    }
+    #[test]
+    fn add_int_float() {
+        assert_eq!(
+            add(Value::Int(1), Value::Float(2.5)).unwrap(),
+            Value::Float(3.5)
+        );
+    }
+    #[test]
+    fn add_float_int() {
+        assert_eq!(
+            add(Value::Float(2.5), Value::Int(1)).unwrap(),
+            Value::Float(3.5)
+        );
+    }
+    #[test]
+    fn add_str_str() {
+        let r = add(Value::Str("ab".into()), Value::Str("cd".into())).unwrap();
+        assert_eq!(r, Value::Str("abcd".into()));
+    }
+    #[test]
+    fn add_list_list() {
+        let r = add(
+            Value::List(vec![Value::Int(1)]),
+            Value::List(vec![Value::Int(2)]),
+        )
+        .unwrap();
+        if let Value::List(items) = r {
+            assert_eq!(items.len(), 2)
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn add_list_element_appends() {
+        let r = add(Value::List(vec![Value::Int(1)]), Value::Int(2)).unwrap();
+        if let Value::List(items) = r {
+            assert_eq!(items, vec![Value::Int(1), Value::Int(2)]);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn add_element_list_prepends() {
+        let r = add(Value::Int(0), Value::List(vec![Value::Int(1)])).unwrap();
+        if let Value::List(items) = r {
+            assert_eq!(items, vec![Value::Int(0), Value::Int(1)]);
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn add_duration_duration() {
+        let d = CypherDuration {
+            months: 0,
+            days: 0,
+            nanos: 1_000_000_000,
+        };
+        let r = add(Value::Duration(d), Value::Duration(d)).unwrap();
+        if let Value::Duration(d) = r {
+            assert_eq!(d.nanos, 2_000_000_000)
+        } else {
+            panic!()
+        }
+    }
+    #[test]
+    fn add_invalid_types_errors() {
+        assert!(add(Value::Bool(true), Value::Int(1)).is_err());
+    }
+}

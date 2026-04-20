@@ -449,4 +449,147 @@ mod tests {
         let one_hour = jiff::civil::time(1, 0, 0, 0);
         assert_eq!(civil_time_to_nanos(&one_hour), 3_600_000_000_000);
     }
+
+    // ── Additional cmp_values branches ────────────────────────────────────
+
+    #[test]
+    fn cmp_values_int_vs_int() {
+        assert_eq!(cmp_values(&Value::Int(1), &Value::Int(2)), Ordering::Less);
+        assert_eq!(cmp_values(&Value::Int(5), &Value::Int(5)), Ordering::Equal);
+        assert_eq!(
+            cmp_values(&Value::Int(7), &Value::Int(2)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn cmp_values_float_vs_float_normal() {
+        assert_eq!(
+            cmp_values(&Value::Float(1.0), &Value::Float(2.0)),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn cmp_values_int_vs_float_and_reverse() {
+        assert_eq!(
+            cmp_values(&Value::Int(1), &Value::Float(2.0)),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_values(&Value::Float(3.0), &Value::Int(2)),
+            Ordering::Greater
+        );
+        assert_eq!(
+            cmp_values(&Value::Int(5), &Value::Float(5.0)),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn cmp_values_bool_ordering() {
+        assert_eq!(
+            cmp_values(&Value::Bool(false), &Value::Bool(true)),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn cmp_values_string_ordering() {
+        assert_eq!(
+            cmp_values(&Value::Str("apple".into()), &Value::Str("banana".into())),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn cmp_values_date_ordering() {
+        let d1 = Value::Date(jiff::civil::date(2024, 1, 1));
+        let d2 = Value::Date(jiff::civil::date(2024, 6, 1));
+        assert_eq!(cmp_values(&d1, &d2), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_localtime_ordering() {
+        let t1 = Value::LocalTime(jiff::civil::time(8, 0, 0, 0));
+        let t2 = Value::LocalTime(jiff::civil::time(20, 0, 0, 0));
+        assert_eq!(cmp_values(&t1, &t2), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_localdatetime_ordering() {
+        let d1 = Value::LocalDateTime(jiff::civil::datetime(2024, 1, 1, 0, 0, 0, 0));
+        let d2 = Value::LocalDateTime(jiff::civil::datetime(2024, 6, 1, 0, 0, 0, 0));
+        assert_eq!(cmp_values(&d1, &d2), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_list_length_tiebreak() {
+        let a = Value::List(vec![Value::Int(1)]);
+        let b = Value::List(vec![Value::Int(1), Value::Int(2)]);
+        assert_eq!(cmp_values(&a, &b), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_list_empty_equal() {
+        assert_eq!(
+            cmp_values(&Value::List(vec![]), &Value::List(vec![])),
+            Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn cmp_values_map_by_length() {
+        let mut m1 = indexmap::IndexMap::new();
+        m1.insert(Box::from("a"), Value::Int(1));
+        let mut m2 = indexmap::IndexMap::new();
+        m2.insert(Box::from("a"), Value::Int(1));
+        m2.insert(Box::from("b"), Value::Int(2));
+        assert_eq!(cmp_values(&Value::Map(m1), &Value::Map(m2)), Ordering::Less);
+    }
+
+    #[test]
+    fn cmp_values_node_by_id_v2() {
+        use crate::storage::NodeId;
+        assert_eq!(
+            cmp_values(&Value::Node(NodeId(1)), &Value::Node(NodeId(2))),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn cmp_values_edge_by_id() {
+        use crate::storage::EdgeId;
+        assert_eq!(
+            cmp_values(&Value::Edge(EdgeId(1)), &Value::Edge(EdgeId(2))),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn cmp_values_duration_ordering() {
+        use crate::types::CypherDuration;
+        let d1 = Value::Duration(CypherDuration {
+            months: 0,
+            days: 1,
+            nanos: 0,
+        });
+        let d2 = Value::Duration(CypherDuration {
+            months: 0,
+            days: 2,
+            nanos: 0,
+        });
+        assert_eq!(cmp_values(&d1, &d2), Ordering::Less);
+        let d3 = Value::Duration(CypherDuration {
+            months: 1,
+            days: 0,
+            nanos: 0,
+        });
+        let d4 = Value::Duration(CypherDuration {
+            months: 0,
+            days: 999,
+            nanos: 0,
+        });
+        assert_eq!(cmp_values(&d3, &d4), Ordering::Greater);
+    }
 }

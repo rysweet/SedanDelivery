@@ -95,3 +95,106 @@ pub(crate) fn tx_commit_impl(
         .ok_or_else(|| StorageError::backend("tx_commit: snapshot is not an InMemoryGraphStore"))?;
     store.merge_from(snap)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s() -> InMemoryGraphStore {
+        InMemoryGraphStore::new()
+    }
+
+    #[test]
+    fn create_then_exists() {
+        let store = s();
+        assert!(create_graph_impl(&store, "g1").is_ok());
+        assert!(graph_exists_impl(&store, "g1").unwrap());
+    }
+
+    #[test]
+    fn create_duplicate_errors() {
+        let store = s();
+        create_graph_impl(&store, "g1").unwrap();
+        assert!(create_graph_impl(&store, "g1").is_err());
+    }
+
+    #[test]
+    fn create_invalid_name_errors() {
+        let store = s();
+        assert!(create_graph_impl(&store, "").is_err());
+    }
+
+    #[test]
+    fn delete_existing_graph() {
+        let store = s();
+        create_graph_impl(&store, "g1").unwrap();
+        assert!(delete_graph_impl(&store, "g1").is_ok());
+        assert!(!graph_exists_impl(&store, "g1").unwrap());
+    }
+
+    #[test]
+    fn delete_missing_errors() {
+        let store = s();
+        assert!(delete_graph_impl(&store, "nope").is_err());
+    }
+
+    #[test]
+    fn graph_exists_false_when_missing() {
+        let store = s();
+        assert!(!graph_exists_impl(&store, "nope").unwrap());
+    }
+
+    #[test]
+    fn list_graphs_sorted() {
+        let store = s();
+        create_graph_impl(&store, "b").unwrap();
+        create_graph_impl(&store, "a").unwrap();
+        create_graph_impl(&store, "c").unwrap();
+        let g = list_graphs_impl(&store).unwrap();
+        assert_eq!(g, vec!["a".to_string(), "b".into(), "c".into()]);
+    }
+
+    #[test]
+    fn graph_stats_empty_graph() {
+        let store = s();
+        create_graph_impl(&store, "g1").unwrap();
+        let stats = graph_stats_impl(&store, "g1").unwrap();
+        assert_eq!(stats.node_count, 0);
+        assert_eq!(stats.edge_count, 0);
+    }
+
+    #[test]
+    fn graph_stats_missing_errors() {
+        let store = s();
+        assert!(graph_stats_impl(&store, "nope").is_err());
+    }
+
+    #[test]
+    fn all_label_names_empty() {
+        let store = s();
+        create_graph_impl(&store, "g1").unwrap();
+        assert!(all_label_names_impl(&store, "g1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn all_label_names_missing_graph_errors() {
+        let store = s();
+        assert!(all_label_names_impl(&store, "nope").is_err());
+    }
+
+    #[test]
+    fn tx_snapshot_returns_some() {
+        let store = s();
+        create_graph_impl(&store, "g1").unwrap();
+        let snap = tx_snapshot_impl(&store, &["g1"]).unwrap();
+        assert!(snap.is_some());
+    }
+
+    #[test]
+    fn tx_commit_with_inmem_snapshot() {
+        let store = s();
+        create_graph_impl(&store, "g1").unwrap();
+        let snap = tx_snapshot_impl(&store, &["g1"]).unwrap().unwrap();
+        assert!(tx_commit_impl(&store, snap.as_ref()).is_ok());
+    }
+}

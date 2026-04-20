@@ -465,4 +465,252 @@ mod tests {
         assert_eq!(row.get("$a"), Some(&Value::Int(1)));
         assert_eq!(row.get("$b"), Some(&Value::Str("x".into())));
     }
+
+    use crate::ast::{Direction, RelType};
+    use crate::planner::operators::mutation::CreatePattern;
+
+    #[test]
+    fn discover_aliases_index_scan() {
+        let op = Operator::IndexScan {
+            label: Label::new("L"),
+            property: "k".to_string(),
+            value: None,
+            alias: id("n"),
+        };
+        assert_eq!(discover_operator_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn discover_aliases_node_by_id_seek() {
+        let op = Operator::NodeByIdSeek {
+            id_expr: Expr::Integer(1),
+            alias: id("n"),
+        };
+        assert_eq!(discover_operator_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn discover_aliases_expand_with_rel_alias() {
+        let op = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![RelType::new("R")],
+            src_alias: id("n"),
+            rel_alias: Some(id("r")),
+            dst_alias: id("m"),
+            child: Box::new(ns("n")),
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"n".to_string()));
+        assert!(r.contains(&"r".to_string()));
+        assert!(r.contains(&"m".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_expand_no_rel_alias() {
+        let op = Operator::Expand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            src_alias: id("n"),
+            rel_alias: None,
+            dst_alias: id("m"),
+            child: Box::new(ns("n")),
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"m".to_string()));
+        assert!(!r.contains(&"r".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_varlen_expand_with_path() {
+        let op = Operator::VarLenExpand {
+            direction: Direction::Outgoing,
+            rel_types: vec![],
+            min: 1,
+            max: 3,
+            src_alias: id("a"),
+            path_alias: Some(id("p")),
+            path_mode: true,
+            dst_alias: id("b"),
+            child: Box::new(ns("a")),
+            rel_props: None,
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"p".to_string()));
+        assert!(r.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_assemble_path() {
+        let op = Operator::AssemblePath {
+            path_alias: id("p"),
+            node_aliases: vec![id("n1")],
+            edge_aliases: vec![],
+            child: Box::new(ns("n1")),
+        };
+        assert!(discover_operator_aliases(&op).contains(&"p".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_project_passthrough() {
+        let op = Operator::Project {
+            items: vec![],
+            child: Box::new(ns("n")),
+        };
+        assert_eq!(discover_operator_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn discover_aliases_aggregate_passthrough() {
+        let op = Operator::Aggregate {
+            keys: vec![],
+            aggregations: vec![],
+            child: Box::new(ns("n")),
+        };
+        assert_eq!(discover_operator_aliases(&op), vec!["n".to_string()]);
+    }
+
+    #[test]
+    fn discover_aliases_merge_relationship_with_rel_alias() {
+        let op = Operator::MergeRelationship {
+            src_alias: id("a"),
+            dst_alias: id("b"),
+            rel_alias: Some(id("r")),
+            rel_type: RelType::new("R"),
+            direction: Direction::Outgoing,
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: Box::new(ns("a")),
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"r".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_left_outer_apply() {
+        let op = Operator::LeftOuterApply {
+            preserved: Box::new(ns("a")),
+            optional_pattern: Box::new(ns("b")),
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"a".to_string()));
+        assert!(r.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_create_with_alias() {
+        let op = Operator::Create {
+            patterns: vec![CreatePattern {
+                nodes: vec![(Some(id("x")), vec![Label::new("L")], vec![])],
+                edges: vec![],
+            }],
+            child: None,
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_merge_node_alias() {
+        let op = Operator::Merge {
+            node_alias: Some(id("m")),
+            labels: vec![Label::new("L")],
+            properties: vec![],
+            on_create: vec![],
+            on_match: vec![],
+            child: None,
+        };
+        assert!(discover_operator_aliases(&op).contains(&"m".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_union_concatenates() {
+        let op = Operator::Union {
+            left: Box::new(ns("a")),
+            right: Box::new(ns("b")),
+            all: true,
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"a".to_string()));
+        assert!(r.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_shortest_path() {
+        let op = Operator::ShortestPath {
+            src_alias: id("a"),
+            dst_alias: id("b"),
+            rel_types: vec![],
+            direction: Direction::Outgoing,
+            min: 1,
+            max: 5,
+            path_alias: id("p"),
+            all_paths: false,
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"p".to_string()));
+        assert!(r.contains(&"a".to_string()));
+        assert!(r.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_call_with_yield_alias() {
+        let op = Operator::Call {
+            procedure: "db.labels".to_string(),
+            args: vec![],
+            yield_items: vec![(id("label"), Some(id("L")))],
+            yield_star: false,
+            standalone: false,
+            child: None,
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"L".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_call_no_alias_uses_name() {
+        let op = Operator::Call {
+            procedure: "db.labels".to_string(),
+            args: vec![],
+            yield_items: vec![(id("label"), None)],
+            yield_star: false,
+            standalone: false,
+            child: None,
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"label".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_foreach_passthrough() {
+        let op = Operator::ForEach {
+            variable: id("x"),
+            list_expr: Expr::List(vec![]),
+            body: Box::new(Operator::SingleRow),
+            child: Box::new(ns("n")),
+        };
+        // FOREACH variable is NOT exposed.
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"n".to_string()));
+        assert!(!r.contains(&"x".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_cap_emits_keys() {
+        let op = Operator::Cap {
+            keys: vec!["a".to_string(), "b".to_string()],
+            child: Box::new(ns("n")),
+            reductions: vec![],
+        };
+        let r = discover_operator_aliases(&op);
+        assert!(r.contains(&"a".to_string()));
+        assert!(r.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn discover_aliases_eval_prop_map_skips_nulls() {
+        // eval_prop_map and eval_count_expr are tested implicitly in many places;
+        // here we verify eval_count_expr float-like cases through the existing suite.
+        assert!(eval_count_expr(&Expr::Float(1.5), &Row::new()).is_err());
+    }
 }

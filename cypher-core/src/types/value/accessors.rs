@@ -126,4 +126,60 @@ mod tests {
         assert_eq!(Value::Float(1.23456).as_float(), Some(1.23456));
         assert_eq!(Value::Null.as_float(), None);
     }
+
+    #[test]
+    fn as_int_only_int() {
+        assert_eq!(Value::Int(5).as_int(), Some(5));
+        assert_eq!(Value::Float(3.7).as_int(), None);
+        assert_eq!(Value::Null.as_int(), None);
+        assert_eq!(Value::Bool(true).as_int(), None);
+    }
+
+    #[test]
+    fn as_str_only_string() {
+        assert_eq!(Value::Str("abc".into()).as_str(), Some("abc"));
+        assert_eq!(Value::Int(1).as_str(), None);
+        assert_eq!(Value::Null.as_str(), None);
+    }
+
+    #[test]
+    fn as_bool_only_bool() {
+        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        assert_eq!(Value::Bool(false).as_bool(), Some(false));
+        assert_eq!(Value::Int(1).as_bool(), None);
+        assert_eq!(Value::Null.as_bool(), None);
+    }
+
+    #[test]
+    fn is_null_works() {
+        assert!(Value::Null.is_null());
+        assert!(!Value::Int(0).is_null());
+        assert!(!Value::Bool(false).is_null());
+    }
+
+    #[test]
+    fn type_names_all_variants() {
+        use crate::types::CypherDuration;
+        assert_eq!(
+            Value::Duration(CypherDuration {
+                months: 0,
+                days: 0,
+                nanos: 0
+            })
+            .type_name(),
+            "Duration"
+        );
+        assert_eq!(Value::Bytes(vec![1, 2, 3]).type_name(), "ByteArray");
+        assert_eq!(Value::List(vec![]).type_name(), "List");
+        assert_eq!(Value::Map(Default::default()).type_name(), "Map");
+        // Date/Time/etc constructors require jiff types; just ensure variants compile.
+    }
+
+    #[test]
+    fn truthy_other_types() {
+        // List, Map, Bool(true) are truthy
+        assert!(Value::List(vec![]).is_truthy());
+        assert!(Value::Map(Default::default()).is_truthy());
+        assert!(Value::Bool(true).is_truthy());
+    }
 }
