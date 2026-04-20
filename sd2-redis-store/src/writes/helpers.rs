@@ -206,4 +206,134 @@ mod tests {
         let cleaned = clean_fanout_props(props);
         assert!(cleaned.is_empty());
     }
+
+    // ── Mock-connection helpers for raise_sequence_floor / ensure_key_absent ──
+
+    use redis::{Arg, Cmd, RedisResult, Value as RedisValue};
+
+    #[derive(Default)]
+    struct ScriptedConn {
+        /// Map of first-arg command name to the response it returns.
+        /// For GET: if value is set in map, returns bulk(value); else Nil.
+        /// For SET/EXISTS/etc we track what was asked.
+        stored: std::collections::HashMap<String, i64>,
+        set_calls: Vec<(String, i64)>,
+        exists_returns: Option<i64>,
+    }
+
+    impl ScriptedConn {
+        fn command_args(cmd: &Cmd) -> Vec<String> {
+            cmd.args_iter()
+                .map(|a| match a {
+                    Arg::Simple(b) => String::from_utf8_lossy(b).to_string(),
+                    Arg::Cursor => "<cursor>".into(),
+                    _ => String::new(),
+                })
+                .collect()
+        }
+    }
+
+    impl redis::ConnectionLike for ScriptedConn {
+        fn req_packed_command(&mut self, _c: &[u8]) -> RedisResult<RedisValue> {
+            panic!("packed_command not expected")
+        }
+        fn req_packed_commands(
+            &mut self,
+            _c: &[u8],
+            _o: usize,
+            _n: usize,
+        ) -> RedisResult<Vec<RedisValue>> {
+            panic!("packed_commands not expected")
+        }
+        fn req_command(&mut self, cmd: &Cmd) -> RedisResult<RedisValue> {
+            let args = Self::command_args(cmd);
+            match args[0].as_str() {
+                "GET" => match self.stored.get(&args[1]) {
+                    Some(v) => Ok(RedisValue::BulkString(v.to_string().into_bytes())),
+                    None => Ok(RedisValue::Nil),
+                },
+                "SET" => {
+                    let v: i64 = args[2].parse().unwrap();
+                    self.set_calls.push((args[1].clone(), v));
+                    self.stored.insert(args[1].clone(), v);
+                    Ok(RedisValue::Okay)
+                }
+                "EXISTS" => Ok(RedisValue::Int(self.exists_returns.unwrap_or(0))),
+                other => panic!("unexpected command {other:?}"),
+            }
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+        fn check_connection(&mut self) -> bool {
+            true
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn raise_sequence_floor_rewrites_when_current_below_floor() {
+        let mut conn = ScriptedConn::default();
+        conn.stored.insert("seq".to_string(), 10);
+        raise_sequence_floor(&mut conn, "seq", 100).unwrap();
+        assert_eq!(conn.set_calls, vec![("seq".to_string(), 100)]);
+    }
+
+    #[test]
+    fn raise_sequence_floor_no_op_when_current_above_floor() {
+        let mut conn = ScriptedConn::default();
+        conn.stored.insert("seq".to_string(), 500);
+        raise_sequence_floor(&mut conn, "seq", 100).unwrap();
+        assert!(
+            conn.set_calls.is_empty(),
+            "no SET should be issued when floor is already met"
+        );
+    }
+
+    #[test]
+    fn raise_sequence_floor_writes_when_key_absent() {
+        let mut conn = ScriptedConn::default();
+        raise_sequence_floor(&mut conn, "seq", 50).unwrap();
+        assert_eq!(conn.set_calls, vec![("seq".to_string(), 50)]);
+    }
+
+    #[test]
+    fn raise_sequence_floor_rejects_floor_exceeding_i64_max() {
+        let mut conn = ScriptedConn::default();
+        let huge = (i64::MAX as u64) + 1;
+        let err = raise_sequence_floor(&mut conn, "seq", huge).unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
+    }
+
+    #[test]
+    fn ensure_key_absent_ok_when_not_present() {
+        let mut conn = ScriptedConn {
+            exists_returns: Some(0),
+            ..ScriptedConn::default()
+        };
+        ensure_key_absent(&mut conn, "node:42", "node", 42).unwrap();
+    }
+
+    #[test]
+    fn ensure_key_absent_errors_when_present() {
+        let mut conn = ScriptedConn {
+            exists_returns: Some(1),
+            ..ScriptedConn::default()
+        };
+        let err = ensure_key_absent(&mut conn, "node:42", "node", 42).unwrap_err();
+        match err {
+            StorageError::ConstraintViolation { msg } => {
+                assert!(msg.contains("node") && msg.contains("42"));
+            }
+            other => panic!("expected ConstraintViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn max_batch_size_defaults_are_positive() {
+        assert!(max_batch_size() >= 1);
+        assert!(batch_pipeline_chunk_size() >= 1);
+    }
 }

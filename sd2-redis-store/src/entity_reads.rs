@@ -254,4 +254,183 @@ mod tests {
         assert_eq!(entries[1].neighbor_id, NodeId(21));
         assert_eq!(entries[1].rel_type, "BLOCKS");
     }
+
+    // ── Mock-backed read_node / read_edge tests ──────────────────────────
+    //
+    // These exercise the decode + error paths of read_node / read_edge
+    // without requiring a live Redis.  We implement a minimal ConnectionLike
+    // that returns a canned `Vec<Value>` response for the next HMGET.
+
+    use redis::{Arg, Cmd, RedisResult, Value as RedisValue};
+
+    #[derive(Default)]
+    struct FakeHmgetConn {
+        response: Vec<RedisValue>,
+    }
+
+    impl FakeHmgetConn {
+        fn cmd_name(cmd: &Cmd) -> String {
+            cmd.args_iter()
+                .next()
+                .map(|a| match a {
+                    Arg::Simple(b) => String::from_utf8_lossy(b).to_string(),
+                    Arg::Cursor => "<cursor>".to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default()
+        }
+    }
+
+    impl redis::ConnectionLike for FakeHmgetConn {
+        fn req_packed_command(&mut self, _cmd: &[u8]) -> RedisResult<RedisValue> {
+            panic!("packed_command not expected in unit tests")
+        }
+        fn req_packed_commands(
+            &mut self,
+            _cmd: &[u8],
+            _offset: usize,
+            _count: usize,
+        ) -> RedisResult<Vec<RedisValue>> {
+            panic!("packed_commands not expected in unit tests")
+        }
+        fn req_command(&mut self, cmd: &Cmd) -> RedisResult<RedisValue> {
+            assert_eq!(Self::cmd_name(cmd), "HMGET");
+            Ok(RedisValue::Array(self.response.clone()))
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+        fn check_connection(&mut self) -> bool {
+            true
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    fn bulk(s: &str) -> RedisValue {
+        RedisValue::BulkString(s.as_bytes().to_vec())
+    }
+
+    fn store_for_tests() -> crate::RedisGraphStore {
+        crate::RedisGraphStore::new_for_testing()
+    }
+
+    #[test]
+    fn read_node_returns_none_for_missing_key() {
+        let mut conn = FakeHmgetConn {
+            response: vec![RedisValue::Nil, RedisValue::Nil],
+        };
+        let store = store_for_tests();
+        let result = store.read_node(&mut conn, "g", 1).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_node_decodes_complete_hash() {
+        let mut conn = FakeHmgetConn {
+            response: vec![bulk(r#"["Person","User"]"#), bulk(r#"{"age":30}"#)],
+        };
+        let store = store_for_tests();
+        let node = store.read_node(&mut conn, "g", 42).unwrap().unwrap();
+        assert_eq!(node.id, NodeId(42));
+        assert_eq!(node.labels, vec!["Person".to_string(), "User".to_string()]);
+        assert!(node.properties.contains_key("age"));
+    }
+
+    #[test]
+    fn read_node_detects_partial_corruption() {
+        // labels present, props missing -> corruption error
+        let mut conn = FakeHmgetConn {
+            response: vec![bulk(r#"["X"]"#), RedisValue::Nil],
+        };
+        let store = store_for_tests();
+        let err = store.read_node(&mut conn, "g", 7).unwrap_err();
+        match err {
+            StorageError::Backend { msg } => {
+                assert!(msg.contains("corrupted") || msg.contains("backend"));
+            }
+            other => panic!("expected Backend error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_node_bad_labels_json_serialization_error() {
+        let mut conn = FakeHmgetConn {
+            response: vec![bulk("not-a-json-array"), bulk(r#"{}"#)],
+        };
+        let store = store_for_tests();
+        let err = store.read_node(&mut conn, "g", 1).unwrap_err();
+        assert!(matches!(err, StorageError::Serialization { .. }));
+    }
+
+    #[test]
+    fn read_edge_returns_none_for_missing_key() {
+        let mut conn = FakeHmgetConn {
+            response: vec![
+                RedisValue::Nil,
+                RedisValue::Nil,
+                RedisValue::Nil,
+                RedisValue::Nil,
+            ],
+        };
+        let store = store_for_tests();
+        let result = store.read_edge(&mut conn, "g", 1).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn read_edge_decodes_complete_hash() {
+        let mut conn = FakeHmgetConn {
+            response: vec![
+                bulk("10"),
+                bulk("20"),
+                bulk("KNOWS"),
+                bulk(r#"{"since":2020}"#),
+            ],
+        };
+        let store = store_for_tests();
+        let edge = store.read_edge(&mut conn, "g", 5).unwrap().unwrap();
+        assert_eq!(edge.id, EdgeId(5));
+        assert_eq!(edge.src, NodeId(10));
+        assert_eq!(edge.dst, NodeId(20));
+        assert_eq!(edge.rel_type, "KNOWS");
+    }
+
+    #[test]
+    fn read_edge_bad_src_id_gives_serialization_error() {
+        let mut conn = FakeHmgetConn {
+            response: vec![bulk("not-a-number"), bulk("20"), bulk("R"), bulk(r#"{}"#)],
+        };
+        let store = store_for_tests();
+        let err = store.read_edge(&mut conn, "g", 1).unwrap_err();
+        match err {
+            StorageError::Serialization { msg } => assert!(msg.contains("src")),
+            other => panic!("expected Serialization, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_edge_bad_dst_id_gives_serialization_error() {
+        let mut conn = FakeHmgetConn {
+            response: vec![bulk("1"), bulk("xx"), bulk("R"), bulk(r#"{}"#)],
+        };
+        let store = store_for_tests();
+        let err = store.read_edge(&mut conn, "g", 1).unwrap_err();
+        match err {
+            StorageError::Serialization { msg } => assert!(msg.contains("dst")),
+            other => panic!("expected Serialization, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_edge_partial_data_returns_backend_error() {
+        // only src present -> partial corruption
+        let mut conn = FakeHmgetConn {
+            response: vec![bulk("1"), RedisValue::Nil, RedisValue::Nil, RedisValue::Nil],
+        };
+        let store = store_for_tests();
+        let err = store.read_edge(&mut conn, "g", 9).unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
+    }
 }

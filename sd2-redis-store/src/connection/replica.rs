@@ -104,3 +104,51 @@ impl ReplicaPool {
         Ok(conn)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_rejects_empty_url_list() {
+        let res = ReplicaPool::new(&[], 4, 1, 60, 0);
+        match res {
+            Err(StorageError::Backend { msg }) => {
+                assert!(msg.contains("at least one URL"), "got {msg}");
+            }
+            Ok(_) => panic!("empty URL list must error"),
+            Err(other) => panic!("expected Backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_distributes_pool_size_across_replicas() {
+        // min_idle=0 prevents eager connect; pool construction should succeed
+        // even when no Redis replica is reachable.
+        let pool = ReplicaPool::new(&["redis://127.0.0.1:1", "redis://127.0.0.1:2"], 4, 1, 60, 0)
+            .expect("replica pool construction should not require live Redis");
+        assert_eq!(pool.pools.len(), 2);
+    }
+
+    #[test]
+    fn new_single_replica_works() {
+        let pool = ReplicaPool::new(&["redis://127.0.0.1:1"], 1, 1, 60, 0)
+            .expect("single-replica pool should build without live Redis");
+        assert_eq!(pool.pools.len(), 1);
+    }
+
+    #[test]
+    fn new_rejects_invalid_url() {
+        // redis::Client::open rejects malformed URLs at construction time.
+        let res = ReplicaPool::new(&["not-a-redis-url"], 1, 1, 60, 0);
+        assert!(matches!(res, Err(StorageError::Backend { .. })));
+    }
+
+    #[test]
+    fn clone_preserves_pool_count() {
+        let pool =
+            ReplicaPool::new(&["redis://127.0.0.1:1", "redis://127.0.0.1:2"], 2, 1, 60, 0).unwrap();
+        let cloned = pool.clone();
+        assert_eq!(cloned.pools.len(), pool.pools.len());
+    }
+}

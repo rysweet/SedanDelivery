@@ -62,6 +62,31 @@ pub struct RedisGraphStore {
 }
 
 #[cfg(test)]
+impl RedisGraphStore {
+    /// Construct a `RedisGraphStore` pointing at a bogus standalone URL for
+    /// unit tests that exercise pure-Rust paths (key building, hash decoding,
+    /// etc.) without opening a connection. `min_idle=0` prevents r2d2 from
+    /// attempting an eager connect, so construction succeeds even when no
+    /// Redis is reachable.
+    pub(crate) fn new_for_testing() -> Self {
+        let pool = crate::connection::RedisPool::standalone(
+            "redis://127.0.0.1:1", // unreachable; never used
+            1,
+            1,
+            60,
+            0,
+        )
+        .expect("standalone pool construction should not require a live Redis");
+        Self {
+            pool,
+            replica_pool: None,
+            key_prefix: String::new(),
+            read_consistency: cypher_core::storage::ReadConsistency::TopologyDefault,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn connection_defaults_are_sensible() {

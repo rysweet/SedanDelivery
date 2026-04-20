@@ -199,4 +199,40 @@ mod tests {
             "cluster pool must return true for is_cluster()"
         );
     }
+
+    // ── Stats + clone + get-error paths (no live Redis) ────────────────
+
+    #[test]
+    fn standalone_stats_reports_zero_when_idle() {
+        let pool = RedisPool::standalone("redis://127.0.0.1:1", 4, 1, 60, 0).unwrap();
+        let s = pool.stats();
+        // No connections have been checked out.
+        assert_eq!(s.active, 0);
+        assert!(s.size >= s.active);
+        assert!(s.idle <= s.size);
+    }
+
+    #[test]
+    fn cluster_stats_reports_zero_when_idle() {
+        let pool = RedisPool::cluster(&["redis://127.0.0.1:7000"], 4, 1, 60, 0).unwrap();
+        let s = pool.stats();
+        assert_eq!(s.active, 0);
+    }
+
+    #[test]
+    fn pool_clone_preserves_kind() {
+        let pool = RedisPool::standalone("redis://127.0.0.1:1", 1, 1, 60, 0).unwrap();
+        let cloned = pool.clone();
+        assert_eq!(pool.is_cluster(), cloned.is_cluster());
+    }
+
+    #[test]
+    fn standalone_get_returns_backend_error_when_no_server() {
+        // min_idle=0 makes construction succeed; the first get() must attempt
+        // a real TCP connect which fails fast against the bogus port, yielding
+        // a StorageError::Backend (not a panic).
+        let pool = RedisPool::standalone("redis://127.0.0.1:1", 1, 1, 60, 0).unwrap();
+        let res = pool.get();
+        assert!(res.is_err(), "expected get() to fail without live Redis");
+    }
 }

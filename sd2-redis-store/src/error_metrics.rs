@@ -102,4 +102,70 @@ mod backend_error_counter_tests {
         let after = backend_error_count();
         assert_eq!(after, before + 1, "counter should increment by 1");
     }
+
+    // ── backend_error_msg (debug build: preserves message) ───────────────
+    #[test]
+    #[cfg(debug_assertions)]
+    fn backend_error_msg_preserves_in_debug() {
+        let out = backend_error_msg("MOVED 1234 1.2.3.4:7001");
+        assert_eq!(out, "MOVED 1234 1.2.3.4:7001");
+    }
+
+    #[test]
+    fn backend_error_msg_is_non_empty() {
+        let out = backend_error_msg("any");
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn backend_storage_error_produces_backend_variant_and_increments() {
+        let before = backend_error_count();
+        let e = backend_storage_error("boom");
+        let after = backend_error_count();
+        assert!(after > before);
+        match e {
+            StorageError::Backend { .. } => {}
+            other => panic!("expected Backend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_write_lock_conflict_outcome_is_callable() {
+        // The metrics crate uses a global recorder; without one installed,
+        // these calls should be no-ops that still exercise the code path.
+        record_write_lock_conflict_outcome("acquire");
+        record_write_lock_conflict_outcome("renew");
+    }
+
+    #[test]
+    fn record_write_lock_backend_failure_is_callable() {
+        record_write_lock_backend_failure("acquire");
+        record_write_lock_backend_failure("release");
+    }
+
+    #[test]
+    fn metric_name_constants_are_distinct_and_prefixed() {
+        let names = [
+            REDIS_WRITE_LOCK_ACQUIRE_ATTEMPTS_TOTAL,
+            REDIS_WRITE_LOCK_ACQUIRE_SUCCESSES_TOTAL,
+            REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL,
+            REDIS_WRITE_LOCK_CONTENTION_FAILURES_TOTAL,
+            REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS,
+            REDIS_WRITE_LOCK_RENEW_SUCCESSES_TOTAL,
+            REDIS_WRITE_LOCK_RENEW_FAILURES_TOTAL,
+            REDIS_WRITE_LOCK_RELEASE_SUCCESSES_TOTAL,
+            REDIS_WRITE_LOCK_RELEASE_FAILURES_TOTAL,
+            REDIS_WRITE_LOCK_HOLD_SECONDS,
+            REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL,
+            REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL,
+        ];
+        for n in names {
+            assert!(n.starts_with("redis_write_lock_"), "got {n}");
+        }
+        // All distinct.
+        let mut sorted: Vec<&&str> = names.iter().collect();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len());
+    }
 }

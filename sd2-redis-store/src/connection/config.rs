@@ -96,3 +96,57 @@ pub(crate) fn socket_timeouts() -> RedisSocketTimeouts {
 pub(crate) fn closed_connection_error() -> RedisError {
     RedisError::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pool_stats_is_copy_and_debug() {
+        let s = PoolStats {
+            size: 10,
+            idle: 3,
+            active: 7,
+        };
+        let c = s; // Copy
+        assert_eq!(c.size, 10);
+        assert_eq!(c.idle, 3);
+        assert_eq!(c.active, 7);
+        assert!(format!("{s:?}").contains("PoolStats"));
+    }
+
+    #[test]
+    fn default_constants_are_sensible() {
+        const { assert!(DEFAULT_POOL_SIZE >= 1) };
+        const { assert!(DEFAULT_POOL_TIMEOUT_SECS >= 1) };
+        const { assert!(DEFAULT_IDLE_TIMEOUT_SECS >= 1) };
+        const { assert!(DEFAULT_MIN_IDLE >= 1) };
+        const { assert!(DEFAULT_CONNECT_TIMEOUT_MS >= 1) };
+        const { assert!(DEFAULT_READ_TIMEOUT_MS >= 1) };
+        const { assert!(DEFAULT_WRITE_TIMEOUT_MS >= 1) };
+    }
+
+    #[test]
+    fn closed_connection_error_is_io_error() {
+        let e = closed_connection_error();
+        // Redis wraps IO errors; the error should be classified as an IO error.
+        assert!(
+            e.is_io_error() || e.to_string().to_ascii_lowercase().contains("pipe"),
+            "unexpected error: {e}"
+        );
+    }
+
+    #[test]
+    fn socket_timeouts_returns_populated_values() {
+        let t = socket_timeouts();
+        assert!(t.connect_timeout.as_millis() >= 1);
+        assert!(t.read_timeout.as_millis() >= 1);
+        assert!(t.write_timeout.as_millis() >= 1);
+    }
+
+    #[test]
+    fn stats_interval_secs_is_in_range() {
+        let v = stats_interval_secs();
+        assert!((1..=3600).contains(&v));
+    }
+}
