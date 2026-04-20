@@ -78,3 +78,60 @@ impl r2d2::ManageConnection for TimeoutClusterClientManager {
         !conn.is_open()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Construction-only tests for the r2d2 manager wrappers. The
+    //! `connect`/`is_valid`/`has_broken` methods require a live Redis and are
+    //! exercised by the live-Redis suite under `tests/`.
+
+    use super::super::config::socket_timeouts;
+    use super::*;
+    use redis::cluster::ClusterClient;
+    use redis::Client;
+
+    #[test]
+    fn standalone_manager_clone_preserves_timeouts() {
+        let client = Client::open("redis://127.0.0.1:1").expect("client open should succeed");
+        let mgr = TimeoutClientManager::new(client, socket_timeouts());
+        let cloned = mgr.clone();
+        // Both managers must report identical timeout fields.
+        assert_eq!(
+            mgr.timeouts.connect_timeout,
+            cloned.timeouts.connect_timeout
+        );
+        assert_eq!(mgr.timeouts.read_timeout, cloned.timeouts.read_timeout);
+        assert_eq!(mgr.timeouts.write_timeout, cloned.timeouts.write_timeout);
+    }
+
+    #[test]
+    fn cluster_manager_clone_preserves_timeouts() {
+        let client = ClusterClient::new(vec!["redis://127.0.0.1:1", "redis://127.0.0.1:2"])
+            .expect("cluster client open should succeed");
+        let mgr = TimeoutClusterClientManager::new(client, socket_timeouts());
+        let cloned = mgr.clone();
+        assert_eq!(
+            mgr.timeouts.connect_timeout,
+            cloned.timeouts.connect_timeout
+        );
+        assert_eq!(mgr.timeouts.read_timeout, cloned.timeouts.read_timeout);
+        assert_eq!(mgr.timeouts.write_timeout, cloned.timeouts.write_timeout);
+    }
+
+    #[test]
+    fn standalone_manager_connect_fails_against_unreachable_url() {
+        // Exercises `connect()` against an unreachable URL — a fast failure
+        // when min_idle=0 isn't possible, so this test runs `connect()`
+        // directly to cover the timeout-bound connect path without going
+        // through r2d2's pre-fill machinery.
+        let client = Client::open("redis://127.0.0.1:1").unwrap();
+        let mgr = TimeoutClientManager::new(client, socket_timeouts());
+        let err = match r2d2::ManageConnection::connect(&mgr) {
+            Err(e) => e,
+            Ok(_) => panic!("connect against unreachable URL must fail"),
+        };
+        // Just assert it produced *some* error; the exact kind depends on the
+        // platform and OS-level connect semantics.
+        let _ = err.to_string();
+    }
+}

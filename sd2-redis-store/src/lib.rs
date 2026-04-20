@@ -44,6 +44,16 @@ pub use store::RedisGraphStore;
 
 pub(crate) use locked_conn::LockedRedisConn;
 
+/// Process-wide mutex shared by all unit tests that mutate `GQL_REDIS_*`
+/// environment variables. Tests that call [`std::env::set_var`] or
+/// [`std::env::remove_var`] must lock this mutex first so they do not race
+/// with tests in sibling modules that read the same variables.
+#[cfg(test)]
+pub(crate) mod test_env_lock {
+    use std::sync::Mutex;
+    pub static ENV_LOCK: Mutex<()> = Mutex::new(());
+}
+
 /// Upper bound on nodes a graph may contain before `delete_graph` is refused.
 ///
 /// Deletion enumerates the all-nodes and all-edges sets via SMEMBERS, then

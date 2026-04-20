@@ -315,3 +315,104 @@ impl RedisGraphStore {
         })
     }
 }
+
+#[cfg(test)]
+mod active_indexes_tests {
+    //! Mock-driven tests for [`RedisGraphStore::active_indexes`]. The other
+    //! indexing helpers in this file require a `LockedRedisConn` and are
+    //! exercised by the live-Redis integration suite.
+
+    use super::*;
+    use redis::{Arg, Cmd, RedisError, RedisResult, Value as RedisValue};
+    use std::collections::VecDeque;
+
+    struct ScriptedSmembersConn(VecDeque<RedisResult<RedisValue>>);
+    impl ScriptedSmembersConn {
+        fn ok(v: &[&str]) -> Self {
+            let mut q = VecDeque::new();
+            q.push_back(Ok(RedisValue::Array(
+                v.iter()
+                    .map(|s| RedisValue::BulkString(s.as_bytes().to_vec()))
+                    .collect(),
+            )));
+            Self(q)
+        }
+        fn err() -> Self {
+            let mut q = VecDeque::new();
+            q.push_back(Err(RedisError::from((redis::ErrorKind::Io, "smembers"))));
+            Self(q)
+        }
+    }
+    impl ConnectionLike for ScriptedSmembersConn {
+        fn req_packed_command(&mut self, _cmd: &[u8]) -> RedisResult<RedisValue> {
+            panic!("not expected");
+        }
+        fn req_packed_commands(
+            &mut self,
+            _cmd: &[u8],
+            _o: usize,
+            _n: usize,
+        ) -> RedisResult<Vec<RedisValue>> {
+            panic!("not expected");
+        }
+        fn req_command(&mut self, cmd: &Cmd) -> RedisResult<RedisValue> {
+            let name = cmd
+                .args_iter()
+                .next()
+                .map(|a| match a {
+                    Arg::Simple(b) => String::from_utf8_lossy(b).to_string(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            assert_eq!(name, "SMEMBERS");
+            self.0.pop_front().expect("queue empty")
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+        fn check_connection(&mut self) -> bool {
+            true
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    fn store() -> RedisGraphStore {
+        RedisGraphStore::new_for_testing()
+    }
+
+    #[test]
+    fn active_indexes_returns_set_of_members() {
+        let s = store();
+        let mut conn = ScriptedSmembersConn::ok(&["Person\x00name", "Movie\x00title"]);
+        let set = s.active_indexes(&mut conn, "g").unwrap();
+        assert_eq!(set.len(), 2);
+        assert!(set.contains("Person\x00name"));
+        assert!(set.contains("Movie\x00title"));
+    }
+
+    #[test]
+    fn active_indexes_returns_empty_set_when_no_indexes_registered() {
+        let s = store();
+        let mut conn = ScriptedSmembersConn::ok(&[]);
+        let set = s.active_indexes(&mut conn, "g").unwrap();
+        assert!(set.is_empty());
+    }
+
+    #[test]
+    fn active_indexes_propagates_backend_error() {
+        let s = store();
+        let mut conn = ScriptedSmembersConn::err();
+        let err = s.active_indexes(&mut conn, "g").unwrap_err();
+        assert!(matches!(err, StorageError::Backend { .. }));
+    }
+
+    #[test]
+    fn index_batch_size_is_positive() {
+        // Reading the configured batch size must succeed and produce at least 1.
+        assert!(super::index_batch_size() >= 1);
+        // Cached on second call.
+        assert_eq!(super::index_batch_size(), super::index_batch_size());
+    }
+}

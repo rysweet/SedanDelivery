@@ -109,3 +109,32 @@ impl RedisPipeline {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the cluster-aware pipeline wrapper. The `RedisConn` enum
+    //! itself wraps `r2d2::PooledConnection`, which can only be constructed
+    //! by checking out a connection from a real pool — so its inherent
+    //! methods are exercised by the live-Redis suite under `tests/`.
+    //!
+    //! Here we cover both standalone and cluster variants of `RedisPipeline`
+    //! through their builder methods, which never touch the network.
+
+    use super::*;
+
+    #[test]
+    fn standalone_pipeline_cmd_arg_ignore_chain() {
+        let mut p = RedisPipeline::Standalone(redis::pipe());
+        // Each builder must return `&mut Self` for chaining.
+        let _ = p.cmd("HSET").arg("k").arg(1u64).ignore();
+        // Verify we still hold a Standalone variant after building.
+        assert!(matches!(p, RedisPipeline::Standalone(_)));
+    }
+
+    #[test]
+    fn cluster_pipeline_cmd_arg_ignore_chain() {
+        let mut p = RedisPipeline::Cluster(redis::cluster::cluster_pipe());
+        let _ = p.cmd("HSET").arg("k").arg(1u64).ignore();
+        assert!(matches!(p, RedisPipeline::Cluster(_)));
+    }
+}
