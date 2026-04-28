@@ -10,51 +10,71 @@ use crate::error_metrics::{
     REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL, REDIS_WRITE_LOCK_ACQUIRE_SUCCESSES_TOTAL,
     REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS, REDIS_WRITE_LOCK_CONTENTION_FAILURES_TOTAL,
 };
-use crate::keys::key_graph_lock;
+use crate::keys::{key_graph_lock, key_graph_lock_fence};
 use crate::lock;
 use crate::locked_conn::{map_lock_release_result, LockedRedisConn};
 
 use super::RedisGraphStore;
+
+/// Release any locks accumulated during a partial write-lock acquisition,
+/// folding each release outcome into the carried result so the caller sees
+/// the first non-success error (and any cleanup-time failures fail the
+/// chain even if the original outcome was `Ok`).
+fn release_held(
+    conn: &mut dyn redis::ConnectionLike,
+    graph: &str,
+    held: &mut Vec<(String, String)>,
+    mut outcome: Result<(), StorageError>,
+) -> Result<(), StorageError> {
+    while let Some((held_key, held_token)) = held.pop() {
+        outcome =
+            map_lock_release_result(graph, lock::release(conn, &held_key, &held_token), outcome);
+    }
+    outcome
+}
+
+/// Outcome of acquiring the per-graph write lock plus any sub-locks.
+struct AcquiredLocks {
+    /// `(lock_key, token)` pairs in acquisition order.
+    held: Vec<(String, String)>,
+    /// Fence value bumped during the graph-lock acquisition (F1).
+    fence: u64,
+}
 
 impl RedisGraphStore {
     fn try_acquire_write_locks(
         &self,
         conn: &mut dyn redis::ConnectionLike,
         graph: &str,
-        lock_keys: &[String],
+        graph_lock_key: &str,
+        graph_fence_key: &str,
+        sub_lock_keys: &[String],
         ttl_ms: u64,
-    ) -> Result<Option<Vec<(String, String)>>, StorageError> {
-        let mut held = Vec::with_capacity(lock_keys.len());
-        for lock_key in lock_keys {
+    ) -> Result<Option<AcquiredLocks>, StorageError> {
+        let mut held: Vec<(String, String)> = Vec::with_capacity(1 + sub_lock_keys.len());
+
+        let fence = match lock::acquire_with_fence(conn, graph_lock_key, graph_fence_key, ttl_ms)? {
+            Some((token, fence)) => {
+                held.push((graph_lock_key.to_string(), token));
+                fence
+            }
+            None => return Ok(None),
+        };
+
+        for lock_key in sub_lock_keys {
             match lock::acquire(conn, lock_key, ttl_ms) {
                 Ok(Some(token)) => held.push((lock_key.clone(), token)),
                 Ok(None) => {
-                    let mut cleanup = Ok(());
-                    while let Some((held_key, held_token)) = held.pop() {
-                        cleanup = map_lock_release_result(
-                            graph,
-                            lock::release(conn, &held_key, &held_token),
-                            cleanup,
-                        );
-                    }
-                    cleanup?;
+                    release_held(conn, graph, &mut held, Ok(()))?;
                     return Ok(None);
                 }
                 Err(err) => {
-                    let mut cleanup: Result<(), StorageError> = Err(err);
-                    while let Some((held_key, held_token)) = held.pop() {
-                        cleanup = map_lock_release_result(
-                            graph,
-                            lock::release(conn, &held_key, &held_token),
-                            cleanup,
-                        );
-                    }
-                    return cleanup
+                    return release_held(conn, graph, &mut held, Err(err))
                         .map(|_| unreachable!("cleanup after write-lock acquire failure"));
                 }
             }
         }
-        Ok(Some(held))
+        Ok(Some(AcquiredLocks { held, fence }))
     }
 
     /// Acquire the graph write lock plus the requested scoped lock (if any),
@@ -79,10 +99,11 @@ impl RedisGraphStore {
         let lock_started_at = Instant::now();
         let mut saw_contention = false;
         let graph_lock_key = self.kp(key_graph_lock(graph));
-        let lock_keys = if lock_key == graph_lock_key {
-            vec![lock_key]
+        let graph_fence_key = self.kp(key_graph_lock_fence(graph));
+        let sub_lock_keys: Vec<String> = if lock_key == graph_lock_key {
+            Vec::new()
         } else {
-            vec![graph_lock_key, lock_key]
+            vec![lock_key]
         };
         metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_ATTEMPTS_TOTAL).increment(1);
         for attempt in 0..=max_retries {
@@ -98,15 +119,23 @@ impl RedisGraphStore {
                     return Err(err);
                 }
             };
-            match self.try_acquire_write_locks(conn.as_mut(), graph, &lock_keys, ttl_ms) {
-                Ok(Some(locks)) => {
+            match self.try_acquire_write_locks(
+                conn.as_mut(),
+                graph,
+                &graph_lock_key,
+                &graph_fence_key,
+                &sub_lock_keys,
+                ttl_ms,
+            ) {
+                Ok(Some(acquired)) => {
                     if saw_contention {
                         metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_CONTENTION_TOTAL).increment(1);
                     }
                     metrics::counter!(REDIS_WRITE_LOCK_ACQUIRE_SUCCESSES_TOTAL).increment(1);
                     metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
                         .record(lock_started_at.elapsed().as_secs_f64());
-                    let mut locked_conn = LockedRedisConn::new(conn, graph, locks, ttl_ms);
+                    let mut locked_conn =
+                        LockedRedisConn::new(conn, graph, acquired.held, acquired.fence, ttl_ms);
                     let result = work
                         .take()
                         .expect("write-lock closure must execute at most once")(
@@ -136,10 +165,12 @@ impl RedisGraphStore {
             metrics::counter!(REDIS_WRITE_LOCK_CONTENTION_FAILURES_TOTAL).increment(1);
             metrics::histogram!(REDIS_WRITE_LOCK_ACQUIRE_WAIT_SECONDS)
                 .record(lock_started_at.elapsed().as_secs_f64());
+            let mut all_keys = vec![graph_lock_key.clone()];
+            all_keys.extend(sub_lock_keys.iter().cloned());
             return Err(StorageError::Backend {
                 msg: format!(
                     "write locks '{}' still contended after {max_retries} retries",
-                    lock_keys.join(", ")
+                    all_keys.join(", ")
                 ),
             });
         }

@@ -1763,24 +1763,69 @@ fn ci26_replica_graph_misses_retry_on_primary() {
 
 #[test]
 fn ci16_create_pipelines_register_manifests_before_primary_hash_write() {
-    for (name, source, signature, manifest_markers) in [
+    // Single-node and single-edge create paths now run their entire write
+    // (manifest registrations + primary hash) inside one slot-local Lua
+    // script (F2 in the cluster consistency hardening package, issue #1769).
+    // The script body itself enforces the manifest-before-hash ordering
+    // *atomically* — there is no longer a partial-write window for the
+    // singleton paths, which is a strictly stronger guarantee than the
+    // pipeline-ordering check this test originally asserted.
+    //
+    // Verify: (a) create_node_impl / create_edge_locked invoke the Lua
+    // helpers, and (b) the Lua scripts themselves register manifests
+    // before HSET'ing the primary hash. Bulk batch_create_* paths still
+    // use the legacy pipeline contract.
+    let lua_src = std::fs::read_to_string("src/writes/lua_atomic.rs")
+        .expect("read sd2-redis-store/src/writes/lua_atomic.rs");
+    let create_node_body = function_block(NODES_SRC, "pub(crate) fn create_node_impl");
+    assert!(
+        create_node_body.contains("node_create_script()"),
+        "create_node_impl must execute the F2 Lua-atomic node-create script"
+    );
+    let create_edge_body = function_block(EDGES_SRC, "fn create_edge_locked");
+    assert!(
+        create_edge_body.contains("edge_create_script()"),
+        "create_edge_locked must execute the F2 Lua-atomic edge-create script"
+    );
+
+    for (script_name, manifest_calls) in [
         (
-            "create_node_impl",
-            NODES_SRC,
-            "pub(crate) fn create_node_impl",
-            &["key_label_names(graph)", "key_nodes_set(graph)"][..],
+            "NODE_CREATE_SCRIPT",
+            &[
+                r#"redis.call("SADD", KEYS[4]"#,
+                r#"redis.call("SADD", KEYS[5]"#,
+            ][..],
         ),
+        (
+            "EDGE_CREATE_SCRIPT",
+            &[
+                r#"redis.call("SADD", KEYS[4]"#,
+                r#"redis.call("SADD", KEYS[5]"#,
+            ][..],
+        ),
+    ] {
+        let script_block = lua_atomic_script_body(&lua_src, script_name);
+        let hset_pos = script_block
+            .find(r#""HSET""#)
+            .unwrap_or_else(|| panic!("{script_name} must HSET the primary hash"));
+        for call in manifest_calls {
+            let pos = script_block
+                .find(call)
+                .unwrap_or_else(|| panic!("{script_name} must include manifest call '{call}'"));
+            assert!(
+                pos < hset_pos,
+                "{script_name}: manifest call '{call}' must precede HSET so a Lua-script crash leaves no orphan hash"
+            );
+        }
+    }
+
+    // Bulk paths still pipeline -- keep the legacy ordering check.
+    for (name, source, signature, manifest_markers) in [
         (
             "batch_create_nodes",
             NODES_SRC,
             "pub fn batch_create_nodes",
             &["key_label_names(graph)", "key_nodes_set(graph)"][..],
-        ),
-        (
-            "create_edge_locked",
-            EDGES_SRC,
-            "fn create_edge_locked",
-            &["key_reltype_names(graph)", "key_edges_set(graph)"][..],
         ),
         (
             "batch_create_edges",
@@ -1803,6 +1848,21 @@ fn ci16_create_pipelines_register_manifests_before_primary_hash_write() {
             );
         }
     }
+}
+
+/// Extract the body of one `pub(crate) const NAME: &str = r#"..."#;` literal
+/// from `lua_atomic.rs`. Used by `ci16` to inspect the Lua-script bodies
+/// for manifest-before-hash ordering.
+fn lua_atomic_script_body<'a>(src: &'a str, const_name: &str) -> &'a str {
+    let needle = format!("const {const_name}: &str = r#\"");
+    let start = src
+        .find(&needle)
+        .unwrap_or_else(|| panic!("{const_name} not found in lua_atomic.rs"))
+        + needle.len();
+    let end = src[start..]
+        .find("\"#")
+        .unwrap_or_else(|| panic!("{const_name} closing delimiter not found"));
+    &src[start..start + end]
 }
 
 #[test]
@@ -2641,16 +2701,20 @@ fn ci23_property_mutators_renew_between_deindex_and_hset() {
 
 #[test]
 fn ci24_label_mutators_and_create_node_renew_before_primary_write() {
+    // create_node_impl moved to a single Lua-atomic invocation (F2). Verify
+    // the lock is renewed immediately before the script call; the script
+    // itself is atomic so there is no longer a separate "primary write
+    // pipeline" to bracket.
     let create_body = function_block(NODES_SRC, "pub(crate) fn create_node_impl");
     let create_renew_pos = create_body
         .find("conn.renew_lock()?")
-        .expect("create_node_impl must renew the write lock before its primary write pipeline");
-    let create_query_pos = create_body
-        .find("pipe.query::<()>(conn)")
-        .expect("create_node_impl must execute its primary write pipeline");
+        .expect("create_node_impl must renew the write lock before invoking the Lua-atomic script");
+    let create_script_pos = create_body
+        .find("run_hot_write_script(node_create_script()")
+        .expect("create_node_impl must execute the F2 Lua-atomic node-create script");
     assert!(
-        create_renew_pos < create_query_pos,
-        "create_node_impl must renew the write lock before executing its primary write pipeline"
+        create_renew_pos < create_script_pos,
+        "create_node_impl must renew the write lock before invoking the Lua-atomic script"
     );
 
     let add_labels_body = function_block(NODES_SRC, "pub(crate) fn add_node_labels_impl");
@@ -2659,13 +2723,13 @@ fn ci24_label_mutators_and_create_node_renew_before_primary_write() {
         .expect("add_node_labels_impl must read the current node before rewriting labels");
     let add_renew_pos = add_labels_body
         .find("conn.renew_lock()?")
-        .expect("add_node_labels_impl must renew the write lock before its label rewrite pipeline");
+        .expect("add_node_labels_impl must renew the write lock before its label rewrite script");
     let add_query_pos = add_labels_body
-        .find("pipe.query::<()>(conn)")
-        .expect("add_node_labels_impl must execute a label rewrite pipeline");
+        .find(".invoke(conn.as_mut())")
+        .expect("add_node_labels_impl must execute a Lua-atomic label rewrite script");
     assert!(
         add_read_pos < add_renew_pos && add_renew_pos < add_query_pos,
-        "add_node_labels_impl must renew the write lock after reading the node and before executing the label rewrite pipeline"
+        "add_node_labels_impl must renew the write lock after reading the node and before invoking the label rewrite script"
     );
 
     let remove_labels_body = function_block(NODES_SRC, "pub(crate) fn remove_node_labels_impl");
@@ -2674,53 +2738,50 @@ fn ci24_label_mutators_and_create_node_renew_before_primary_write() {
         .expect("remove_node_labels_impl must deindex removed labels before rewriting the node");
     let remove_renew_pos = remove_labels_body
         .find("conn.renew_lock()?")
-        .expect("remove_node_labels_impl must renew the write lock before its combined label rewrite pipeline");
+        .expect("remove_node_labels_impl must renew the write lock before its combined label rewrite script");
     let remove_query_pos = remove_labels_body
-        .find("pipe.query::<()>(conn)")
-        .expect("remove_node_labels_impl must execute a combined label rewrite pipeline");
+        .find(".invoke(conn.as_mut())")
+        .expect("remove_node_labels_impl must execute a Lua-atomic combined label rewrite script");
     assert!(
         remove_deindex_pos < remove_renew_pos && remove_renew_pos < remove_query_pos,
-        "remove_node_labels_impl must renew the write lock after deindexing and before executing the combined label rewrite pipeline"
-    );
-    assert!(
-        !remove_labels_body.contains("redis::cmd(\"HSET\")"),
-        "remove_node_labels_impl must keep label index removal and label-list rewrite in the same pipeline"
+        "remove_node_labels_impl must renew the write lock after deindexing and before invoking the combined label rewrite script"
     );
 }
 
 #[test]
 fn ci25_edge_and_delete_mutators_renew_before_final_write() {
+    // create_edge_locked moved to a single Lua-atomic invocation (F2).
     let create_edge_body = function_block(EDGES_SRC, "fn create_edge_locked");
-    let create_edge_renew_pos = create_edge_body
-        .find("conn.renew_lock()?")
-        .expect("create_edge_locked must renew the write lock before its primary write pipeline");
-    let create_edge_query_pos = create_edge_body
-        .find("pipe.query::<()>(conn)")
-        .expect("create_edge_locked must execute its primary write pipeline");
+    let create_edge_renew_pos = create_edge_body.find("conn.renew_lock()?").expect(
+        "create_edge_locked must renew the write lock before invoking the Lua-atomic script",
+    );
+    let create_edge_script_pos = create_edge_body
+        .find("run_hot_write_script(edge_create_script()")
+        .expect("create_edge_locked must execute the F2 Lua-atomic edge-create script");
     assert!(
-        create_edge_renew_pos < create_edge_query_pos,
-        "create_edge_locked must renew the write lock before executing its primary write pipeline"
+        create_edge_renew_pos < create_edge_script_pos,
+        "create_edge_locked must renew the write lock before invoking the Lua-atomic script"
     );
 
     let delete_edge_body = function_block(EDGES_SRC, "pub(crate) fn delete_edge_inner");
     let delete_edge_renew_pos = delete_edge_body
         .find("conn.renew_lock()?")
-        .expect("delete_edge_inner must renew the write lock before its delete pipeline");
+        .expect("delete_edge_inner must renew the write lock before its delete script");
     let delete_edge_query_pos = delete_edge_body
-        .find("pipe.query::<()>(conn)")
-        .expect("delete_edge_inner must execute a delete pipeline");
+        .find(".invoke(conn.as_mut())")
+        .expect("delete_edge_inner must execute a Lua-atomic delete script");
     assert!(
         delete_edge_renew_pos < delete_edge_query_pos,
-        "delete_edge_inner must renew the write lock before executing its delete pipeline"
+        "delete_edge_inner must renew the write lock before invoking its delete script"
     );
 
     let delete_node_body = function_block(NODES_SRC, "pub(crate) fn delete_node_impl");
     let delete_node_query_pos = delete_node_body
-        .rfind("pipe.query::<()>(conn)")
-        .expect("delete_node_impl must execute a final delete pipeline");
+        .rfind(".invoke(conn.as_mut())")
+        .expect("delete_node_impl must execute a final Lua-atomic delete script");
     let delete_node_renew_pos = delete_node_body[..delete_node_query_pos]
         .rfind("conn.renew_lock()?")
-        .expect("delete_node_impl must renew the write lock before its final delete pipeline");
+        .expect("delete_node_impl must renew the write lock before its final delete script");
     assert!(
         delete_node_renew_pos < delete_node_query_pos,
         "delete_node_impl must renew the write lock before executing its final delete pipeline"

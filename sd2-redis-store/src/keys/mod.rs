@@ -22,7 +22,7 @@ pub(crate) use index::{
 };
 pub(crate) use locks::{
     key_batch_edge_write_lock, key_batch_node_write_lock, key_edge_id_write_lock,
-    key_edge_write_lock, key_graph_lock, key_node_write_lock, KEY_GRAPHS,
+    key_edge_write_lock, key_graph_lock, key_graph_lock_fence, key_node_write_lock, KEY_GRAPHS,
 };
 
 #[cfg(test)]

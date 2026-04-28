@@ -13,11 +13,43 @@ use crate::RedisGraphStore;
 use super::helpers::{smembers_or_scan, smembers_threshold};
 
 impl RedisGraphStore {
+    /// Cluster-safe active-label discovery using a slot-local pipelined SCARD
+    /// batch (F6 in the cluster consistency hardening package, issue #1769).
+    ///
+    /// Falls back to the per-key `_on` variant for stores that need a
+    /// `&mut dyn ConnectionLike` (e.g. mock-driven unit tests). For live
+    /// Redis traffic the pipelined path collapses N round-trips into one.
     pub(crate) fn active_label_names(
         &self,
         conn: &mut RedisConn,
         graph: &str,
     ) -> Result<Vec<String>, StorageError> {
+        let registry_key = self.kp(key_label_names(graph));
+        let labels: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(&registry_key)
+            .query(conn.as_mut())
+            .map_err(crate::backend_storage_error)?;
+        if !labels.is_empty() {
+            let mut pipe = conn.pipeline();
+            for label in &labels {
+                pipe.cmd("SCARD").key(self.kp(key_label(graph, label)));
+            }
+            let counts: Vec<u64> = pipe
+                .query::<Vec<u64>>(conn)
+                .map_err(crate::backend_storage_error)?;
+            let mut active: Vec<String> = labels
+                .into_iter()
+                .zip(counts)
+                .filter_map(|(name, c)| (c > 0).then_some(name))
+                .collect();
+            active.sort_unstable();
+            if !active.is_empty() {
+                return Ok(active);
+            }
+        }
+        // Fall back to the slow path (per-node HGET fan-out) when the
+        // registry is stale/empty.  This is rare and tolerated on the
+        // current code path; see issue #1276 for prior discussion.
         self.active_label_names_on(conn.as_mut(), graph)
     }
 
@@ -26,6 +58,29 @@ impl RedisGraphStore {
         conn: &mut RedisConn,
         graph: &str,
     ) -> Result<Vec<String>, StorageError> {
+        let registry_key = self.kp(key_reltype_names(graph));
+        let reltypes: Vec<String> = redis::cmd("SMEMBERS")
+            .arg(&registry_key)
+            .query(conn.as_mut())
+            .map_err(crate::backend_storage_error)?;
+        if !reltypes.is_empty() {
+            let mut pipe = conn.pipeline();
+            for reltype in &reltypes {
+                pipe.cmd("SCARD").key(self.kp(key_reltype(graph, reltype)));
+            }
+            let counts: Vec<u64> = pipe
+                .query::<Vec<u64>>(conn)
+                .map_err(crate::backend_storage_error)?;
+            let mut active: Vec<String> = reltypes
+                .into_iter()
+                .zip(counts)
+                .filter_map(|(name, c)| (c > 0).then_some(name))
+                .collect();
+            active.sort_unstable();
+            if !active.is_empty() {
+                return Ok(active);
+            }
+        }
         self.active_reltype_names_on(conn.as_mut(), graph)
     }
 
@@ -49,13 +104,13 @@ impl RedisGraphStore {
             .map_err(crate::backend_storage_error)?;
         if !labels.is_empty() {
             let mut active: Vec<String> = Vec::with_capacity(labels.len());
-            for label in &labels {
+            for label in labels {
                 let count: u64 = redis::cmd("SCARD")
-                    .arg(self.kp(key_label(graph, label)))
+                    .arg(self.kp(key_label(graph, &label)))
                     .query(conn)
                     .map_err(crate::backend_storage_error)?;
                 if count > 0 {
-                    active.push(label.clone());
+                    active.push(label);
                 }
             }
             active.sort_unstable();
@@ -108,13 +163,13 @@ impl RedisGraphStore {
             .map_err(crate::backend_storage_error)?;
         if !reltypes.is_empty() {
             let mut active: Vec<String> = Vec::with_capacity(reltypes.len());
-            for reltype in &reltypes {
+            for reltype in reltypes {
                 let count: u64 = redis::cmd("SCARD")
-                    .arg(self.kp(key_reltype(graph, reltype)))
+                    .arg(self.kp(key_reltype(graph, &reltype)))
                     .query(conn)
                     .map_err(crate::backend_storage_error)?;
                 if count > 0 {
-                    active.push(reltype.clone());
+                    active.push(reltype);
                 }
             }
             active.sort_unstable();

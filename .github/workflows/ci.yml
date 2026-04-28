@@ -168,11 +168,23 @@ jobs:
     name: Gremlin TCK
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # NOTE: TCK passes locally (1672/1672 in <2min --release) but consistently
-    # SIGTERMs on GH-hosted runners around scenario ~600/1672 (~4min in). Likely
-    # the standard 7GB-RAM/14GB-disk runner is starved. Tracked in #1697 — until
-    # diagnosed, TCK is reported but non-blocking so it can't gate every PR.
-    continue-on-error: true
+    # 1672 scenarios sharded across the 7 top-level feature subdirectories so
+    # no single runner exhausts the GH-hosted 7GB-RAM/14GB-disk budget. Each
+    # shard runs the cucumber binary against just one subdirectory via the
+    # GREMLIN_TCK_FEATURES env var. The optional GREMLIN_TCK_FILE_PREFIXES
+    # env var supports finer sub-shard splits if a single subdirectory ever
+    # outgrows a single runner. Tracked in #1697.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: branch,     dir: branch,     prefixes: "" }
+          - { shard: data,       dir: data,       prefixes: "" }
+          - { shard: filter,     dir: filter,     prefixes: "" }
+          - { shard: integrated, dir: integrated, prefixes: "" }
+          - { shard: map,        dir: map,        prefixes: "" }
+          - { shard: semantics,  dir: semantics,  prefixes: "" }
+          - { shard: sideEffect, dir: sideEffect, prefixes: "" }
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4.1.5
 
@@ -199,10 +211,12 @@ jobs:
           restore-keys: |
             gremlin-tck-release-${{ runner.os }}-
 
-      - name: Run Gremlin TCK (1672 scenarios)
-        run: cargo test -p gremlin-tck --test gremlin_tck --release -- --test-threads=2
+      - name: Run Gremlin TCK shard (${{ matrix.shard }})
+        run: cargo test -p gremlin-tck --test gremlin_tck --release -- --concurrency 1
         env:
           RUST_MIN_STACK: "8388608"
+          GREMLIN_TCK_FEATURES: features/${{ matrix.dir }}
+          GREMLIN_TCK_FILE_PREFIXES: ${{ matrix.prefixes }}
 
   sedan-web-validation:
     name: Sedan Web Validation

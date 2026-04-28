@@ -20,6 +20,11 @@ pub(crate) struct LockedRedisConn {
     conn: RedisConn,
     graph: Box<str>,
     locks: Vec<HeldRedisLock>,
+    /// Fence value bumped during graph-lock acquisition (F1 in the cluster
+    /// consistency hardening package). Every `LockedRedisConn` is constructed
+    /// from a fenced acquire in `with_write_lock`, so this is always
+    /// populated for the duration of the lock.
+    fence: u64,
     ttl_ms: u64,
     acquired_at: Instant,
 }
@@ -29,6 +34,7 @@ impl LockedRedisConn {
         conn: RedisConn,
         graph: &str,
         locks: Vec<(String, String)>,
+        fence: u64,
         ttl_ms: u64,
     ) -> Self {
         Self {
@@ -41,9 +47,21 @@ impl LockedRedisConn {
                     token: token.into_boxed_str(),
                 })
                 .collect(),
+            fence,
             ttl_ms,
             acquired_at: Instant::now(),
         }
+    }
+
+    /// Fence value associated with this lock (F1).
+    ///
+    /// Hot-write Lua scripts that mutate per-graph state validate this token
+    /// server-side against the per-graph fence counter so a stalled writer
+    /// whose lease has been stolen fails closed instead of landing late
+    /// partial writes.
+    #[inline]
+    pub(crate) fn fence(&self) -> u64 {
+        self.fence
     }
 
     pub(crate) fn renew_lock(&mut self) -> Result<(), StorageError> {

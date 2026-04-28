@@ -7,8 +7,14 @@ title: Admin API
 
 Operational HTTP endpoints that sit beside the public graph CRUD surface.
 
-The only admin route documented here is the Redis-backed metadata audit
-endpoint below.
+This page documents two Redis-backed admin routes:
+
+- `POST /admin/graphs/{name}/audit` — registry/marker audit and optional repair
+- `POST /admin/graphs/{name}/finalize-delete` — operator-confirmed clearing of
+  an orphaned `_deleting` marker
+
+Both routes are subject to the consistency guarantees documented in the
+[Cluster Consistency Contract](cluster-consistency-contract).
 
 ## `POST /admin/graphs/{name}/audit`
 
@@ -102,3 +108,122 @@ curl -X POST 'http://localhost:3001/admin/graphs/social/audit?repair=true'
 For the deeper operational model — why registries drift, why `_deleting` is
 report-only, and when to use `repair=true` — see
 [Graph Metadata Audit](graph-metadata-audit).
+
+---
+
+## `POST /admin/graphs/{name}/finalize-delete`
+
+Operator-confirmed clearing of an orphaned `G:{g}:_deleting` marker. This route
+exists because the audit endpoint is intentionally report-only for `_deleting`:
+even when audit reports `deletingOrphaned=true`, the marker is never cleared
+automatically.
+
+### When to use it
+
+Only when **all** of the following are true:
+
+1. `POST /admin/graphs/{name}/audit` reports `"deletingOrphaned": true`.
+2. You have confirmed (out of band) that no in-flight `delete_graph` is
+   resuming on another node.
+3. You want the graph name released for reuse.
+
+If any of those is unclear, run audit again instead. This endpoint is not a
+replacement for letting a normal `delete_graph` finish.
+
+### Query parameters
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `confirm` | string | yes | Must equal exactly `true`. Any other value (including `1`, `yes`, missing) returns `400 Bad Request`. |
+
+The request body must be empty or the literal `{}` (≤ 1 KiB). Anything else
+returns `400 Bad Request`.
+
+### What the route does
+
+Under a freshly acquired graph write lock with a fresh fence token:
+
+1. Re-runs `audit_graph_metadata` with `repair=false`. If the result does not
+   show `deletingOrphaned=true`, returns `409 Conflict`.
+2. Sweeps remaining `G:{g}:*` keys via cluster-safe `SCAN` + `UNLINK`,
+   including `G:{g}:write_lock_fence` and the lock key itself.
+3. `SREM`s `{name}` from `__sd2_registry:graphs`.
+4. Releases the lock.
+
+The operation is idempotent: re-invoking on a name that is no longer in the
+registry returns `404 Not Found`.
+
+### Response body (success)
+
+```json
+{
+  "graph": "social",
+  "finalized": true,
+  "deletedKeys": [
+    "G:{social}:_deleting"
+  ],
+  "registryRemovedFrom": "__sd2_registry:graphs"
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `graph` | string | Graph name that was finalized |
+| `finalized` | bool | Always `true` on success |
+| `deletedKeys` | string[] | Per-graph Redis keys that were `DEL`'d outright. The `_deleting` marker is the canonical entry. The lease key (`G:{g}:write_lock`) and fence counter (`G:{g}:write_lock_fence`) are NOT included — the lease is released via CAS-release after the sweep, and the fence counter is preserved across re-creations of the same graph name to keep its monotonicity contract intact. |
+| `registryRemovedFrom` | string \| null | The registry set the graph membership was `SREM`'d from (typically `__sd2_registry:graphs`), or `null` if the membership was already absent. The registry key itself is **not** deleted — only the graph's membership in it. |
+
+### Examples
+
+Refuse without `confirm=true`:
+
+```bash
+curl -X POST 'http://localhost:3001/admin/graphs/social/finalize-delete'
+# 400 Bad Request: {"error":"confirmation_required","message":"add ?confirm=true to finalize"}
+```
+
+Happy path:
+
+```bash
+# 1. Confirm orphaned state
+curl -X POST 'http://localhost:3001/admin/graphs/social/audit' \
+  | jq '.deletingOrphaned'
+# true
+
+# 2. Finalize
+curl -X POST 'http://localhost:3001/admin/graphs/social/finalize-delete?confirm=true'
+```
+
+Refuse when graph is live:
+
+```bash
+curl -X POST 'http://localhost:3001/admin/graphs/social/finalize-delete?confirm=true'
+# 409 Conflict: {"error":"graph_not_orphaned","message":"graph 'social' is not in deleting-orphaned state"}
+```
+
+### Error conditions
+
+| HTTP status | Condition |
+|---|---|
+| `400 Bad Request` | Missing or wrong `confirm` value, invalid graph name, or non-empty body |
+| `404 Not Found` | Graph name is not in `__sd2_registry:graphs` and no `_deleting` marker exists |
+| `409 Conflict` | Audit re-check shows the graph is **not** in deleting-orphaned state (live graph or in-flight delete) |
+| `423 Locked` | Lease was fenced by a competing operator during finalize; safe to retry |
+| `500 Internal Server Error` | Redis/backend failure during sweep or `SREM` |
+| `501 Not Implemented` | Active backend is not `RedisGraphStore` |
+
+### Authentication
+
+Same Entra-bearer middleware as `/admin/graphs/{name}/audit`. There is no
+separate per-route RBAC; deployments that need narrower access control must
+enforce it at the gateway.
+
+Every successful or refused finalize emits an audit log line containing the
+graph name, the outcome, and the cleared key list. When Entra bearer auth is
+enabled, the line also includes the caller's `oid`; when auth is disabled
+(local/dev deployments) the caller identity field is omitted.
+
+### See also
+
+- [Cluster Write Safety — Stuck `_deleting` Runbook](cluster-write-safety#runbook-clearing-a-stuck-_deleting-marker)
+- [Cluster Consistency Contract](cluster-consistency-contract)

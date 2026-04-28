@@ -37,6 +37,15 @@ pub(crate) const REDIS_WRITE_LOCK_CONFLICT_OUTCOMES_TOTAL: &str =
     "redis_write_lock_conflict_outcomes_total";
 pub(crate) const REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL: &str =
     "redis_write_lock_backend_failures_total";
+/// Counter incremented when a Lua-atomic hot-write script rejects a write
+/// because the per-graph fence has advanced past the writer's expected token
+/// (i.e. the writer's lease was stolen and a newer writer has taken over).
+///
+/// **Not** classified as a backend error — fence rejection is the system
+/// behaving correctly under TTL-driven lease takeover, so the
+/// resharding-resilience smoke test that checks for `*_backend_errors_*`
+/// series will not flag this counter.
+pub(crate) const REDIS_LOCK_FENCE_REJECTED_TOTAL: &str = "sd2_redis_lock_fence_rejected_total";
 
 /// Increment the `StorageError::Backend` counter by one.
 pub fn record_backend_error() {
@@ -54,6 +63,12 @@ pub(crate) fn record_write_lock_conflict_outcome(stage: &'static str) {
 
 pub(crate) fn record_write_lock_backend_failure(stage: &'static str) {
     metrics::counter!(REDIS_WRITE_LOCK_BACKEND_FAILURES_TOTAL, "stage" => stage).increment(1);
+}
+
+/// Increment the fence-rejection counter, labelled with the graph that
+/// triggered the rejection (F1 in the cluster consistency hardening package).
+pub(crate) fn record_lock_fence_rejected(graph: &str) {
+    metrics::counter!(REDIS_LOCK_FENCE_REJECTED_TOTAL, "graph" => graph.to_string()).increment(1);
 }
 
 /// Sanitize a backend error message for inclusion in `StorageError::Backend`.

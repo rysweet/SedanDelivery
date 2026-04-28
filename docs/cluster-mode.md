@@ -278,6 +278,7 @@ driver entrypoint.
 
 ## See Also
 
+- [Cluster Consistency Contract](cluster-consistency-contract) — canonical user-facing guarantees
 - [Cluster Write Safety](cluster-write-safety)
 - [Redis Key Schema](redis-key-schema)
 - [Documentation Index](index)

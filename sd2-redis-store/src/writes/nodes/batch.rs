@@ -185,7 +185,7 @@ impl RedisGraphStore {
                             if !labels.is_empty() {
                                 let registry_key = self.kp(key_label_names(graph));
                                 let cmd = pipe.cmd("SADD");
-                                cmd.arg(&registry_key);
+                                cmd.key(&registry_key);
                                 for label in &labels {
                                     cmd.arg(label.as_str());
                                 }
@@ -193,19 +193,19 @@ impl RedisGraphStore {
                             }
 
                             pipe.cmd("SADD")
-                                .arg(self.kp(key_nodes_set(graph)))
+                                .key(self.kp(key_nodes_set(graph)))
                                 .arg(id.to_string())
                                 .ignore();
 
                             for label in &labels {
                                 pipe.cmd("SADD")
-                                    .arg(self.kp(key_label(graph, label)))
+                                    .key(self.kp(key_label(graph, label)))
                                     .arg(id.to_string())
                                     .ignore();
                             }
 
                             pipe.cmd("HSET")
-                                .arg(&node_key)
+                                .key(node_key.clone())
                                 .arg("labels")
                                 .arg(&labels_json)
                                 .arg("props")

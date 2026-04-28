@@ -139,32 +139,32 @@ impl RedisGraphStore {
                         let props_json = props_to_json(&clean_props)?;
 
                         pipe.cmd("SADD")
-                            .arg(self.kp(key_reltype_names(graph)))
+                            .key(self.kp(key_reltype_names(graph)))
                             .arg(rel_type.as_str())
                             .ignore();
                         pipe.cmd("SADD")
-                            .arg(self.kp(key_edges_set(graph)))
+                            .key(self.kp(key_edges_set(graph)))
                             .arg(&id_str)
                             .ignore();
                         pipe.cmd("SADD")
-                            .arg(self.kp(key_reltype(graph, &rel_type)))
+                            .key(self.kp(key_reltype(graph, &rel_type)))
                             .arg(&id_str)
                             .ignore();
 
                         let out_member = encode_adj(eid, dst, &rel_type);
                         pipe.cmd("SADD")
-                            .arg(self.kp(key_out(graph, src.0)))
+                            .key(self.kp(key_out(graph, src.0)))
                             .arg(out_member)
                             .ignore();
 
                         let in_member = encode_adj(eid, src, &rel_type);
                         pipe.cmd("SADD")
-                            .arg(self.kp(key_in(graph, dst.0)))
+                            .key(self.kp(key_in(graph, dst.0)))
                             .arg(in_member)
                             .ignore();
 
                         pipe.cmd("HSET")
-                            .arg(&edge_key)
+                            .key(edge_key.clone())
                             .arg("src")
                             .arg(src.0.to_string())
                             .arg("dst")

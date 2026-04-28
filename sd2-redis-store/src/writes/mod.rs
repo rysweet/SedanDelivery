@@ -7,6 +7,7 @@
 //   - graphs:  Graph lifecycle (create_graph, delete_graph)
 
 pub(crate) mod helpers;
+pub(crate) mod lua_atomic;
 
 mod edges;
 mod graphs;

@@ -5,12 +5,18 @@ use std::collections::HashSet;
 use cypher_core::error::StorageError;
 use cypher_core::storage::{EdgeId, NodeId};
 
-use crate::keys::{key_in, key_label, key_node, key_nodes_set, key_out};
+use crate::keys::{key_graph_lock_fence, key_in, key_label, key_node, key_nodes_set, key_out};
 use crate::lock::WRITE_LOCK_TTL_MS;
 use crate::reads::{for_each_set_page_locked, smembers_threshold};
+use crate::writes::lua_atomic::{map_script_error, NODE_DELETE_SCRIPT};
 use crate::RedisGraphStore;
 
 use super::{insert_detach_edge_id_with_limit, max_detach_delete_edges};
+
+fn node_delete_script() -> &'static redis::Script {
+    static SCRIPT: std::sync::OnceLock<redis::Script> = std::sync::OnceLock::new();
+    SCRIPT.get_or_init(|| redis::Script::new(NODE_DELETE_SCRIPT))
+}
 
 impl RedisGraphStore {
     /// Delete a node and optionally detach (delete) all its edges first.
@@ -19,8 +25,13 @@ impl RedisGraphStore {
     /// When `detach` is true, deletes all adjacent edges (both incoming and
     /// outgoing) before removing the node itself.
     ///
-    /// Node deletion removes: label index entries, the all-nodes set entry,
-    /// adjacency keys, property indexes, and the node hash.
+    /// The final teardown — label-index SREMs, all-nodes SREM, adjacency
+    /// DELs, and node-hash DEL — runs inside a single slot-local Lua
+    /// script gated on the per-graph fence token (F1+F2 in the cluster
+    /// consistency hardening package, issue #1769). A concurrent reader
+    /// can never observe a node hash whose label-index entries have been
+    /// half-cleared, and a stalled writer whose lease was stolen fails
+    /// closed with `LockFenced`.
     pub(crate) fn delete_node_impl(
         &self,
         graph: &str,
@@ -109,33 +120,33 @@ impl RedisGraphStore {
                     self.delete_edge_inner(conn, graph, eid)?;
                 }
             }
-            // Remove property indexes (requires reads, so must stay outside transaction).
+            // Remove property indexes (requires reads, so must stay outside the script).
             self.deindex_node_properties(conn, graph, id.0, &node.labels, &node.properties)?;
-            // Remove label indexes, all-nodes set, adjacency keys, and node hash in one pipeline.
-            let id_str = id.0.to_string();
-            let mut pipe = conn.pipeline();
+
+            // Slot-local Lua teardown of label-index, all-nodes, adjacency, and node hash.
+            let fence_str = conn.fence().to_string();
+            let mut keys: Vec<String> = Vec::with_capacity(5 + node.labels.len());
+            keys.push(self.kp(key_graph_lock_fence(graph)));
+            keys.push(self.kp(key_node(graph, id.0)));
+            keys.push(self.kp(key_nodes_set(graph)));
+            keys.push(self.kp(key_out(graph, id.0)));
+            keys.push(self.kp(key_in(graph, id.0)));
             for label in &node.labels {
-                pipe.cmd("SREM")
-                    .arg(self.kp(key_label(graph, label)))
-                    .arg(&id_str)
-                    .ignore();
+                keys.push(self.kp(key_label(graph, label)));
             }
-            pipe.cmd("SREM")
-                .arg(self.kp(key_nodes_set(graph)))
-                .arg(&id_str)
-                .ignore()
-                .cmd("DEL")
-                .arg(self.kp(key_out(graph, id.0)))
-                .ignore()
-                .cmd("DEL")
-                .arg(self.kp(key_in(graph, id.0)))
-                .ignore()
-                .cmd("DEL")
-                .arg(self.kp(key_node(graph, id.0)))
-                .ignore();
+            let args = [fence_str, id.0.to_string()];
+
             conn.renew_lock()?;
-            pipe.query::<()>(conn)
-                .map_err(crate::backend_storage_error)?;
+            let mut invocation = node_delete_script().prepare_invoke();
+            for k in &keys {
+                invocation.key(k.as_str());
+            }
+            for a in &args {
+                invocation.arg(a.as_str());
+            }
+            let _: i64 = invocation
+                .invoke(conn.as_mut())
+                .map_err(|e| map_script_error(graph, e))?;
             Ok(())
         })
     }

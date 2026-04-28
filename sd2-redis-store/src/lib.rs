@@ -35,7 +35,7 @@ mod store;
 mod validation;
 mod writes;
 
-pub use audit::GraphMetadataAuditReport;
+pub use audit::{FinalizeDeleteReport, GraphMetadataAuditReport};
 pub use connection::PoolStats;
 pub(crate) use error_metrics::backend_storage_error;
 pub use error_metrics::{backend_error_count, backend_error_msg, record_backend_error};

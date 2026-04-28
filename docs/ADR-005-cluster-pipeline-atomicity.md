@@ -208,3 +208,60 @@ Validated result:
 - [Cluster Write Safety](cluster-write-safety)
 - [Redis Cluster Mode](cluster-mode)
 - [Redis Key Schema](redis-key-schema)
+
+---
+
+## Addendum: Cluster Consistency Hardening (2026-04-26)
+
+This ADR is extended by the cluster consistency hardening package, which adds
+five mechanisms on top of the original five rules without changing the core
+decision:
+
+1. **Fencing tokens.** Every `try_acquire_write_locks` now also `INCR`s
+   `G:{g}:write_lock_fence` and threads the resulting `u64` through
+   `HeldRedisLock`. The `CAS_RENEW_SCRIPT` is extended to validate both the
+   UUID lease token and the fence; mismatch on either returns the new
+   `StorageError::LockFenced` variant. Every Lua hot-write script validates
+   the fence as its first action and fails with `STALE_FENCE` if mismatched.
+   Detection cadence is `lock_ttl / 3`.
+
+2. **Lua-atomic single-entity writes.** Single-node and single-edge `CREATE`
+   paths now execute as slot-local Lua scripts
+   (`NODE_CREATE_WITH_LABELS_SCRIPT`, `EDGE_CREATE_WITH_ADJACENCY_SCRIPT`),
+   closing the partial-write windows where `MATCH` could observe a node
+   without its labels or an edge without its reverse adjacency. Bulk paths
+   remain slot-local pipelines for cost reasons.
+
+3. **Pipeline slot guard.** `RedisPipeline::key()` records keyed arguments and
+   `query()` debug-asserts they share a single `{...}` hash tag. Cross-slot
+   pipelines and any pipeline that mixes `__sd2_registry:graphs` with
+   per-graph keys panic in debug and increment
+   `sd2_redis_pipeline_cross_slot_total` in release.
+
+4. **Registry SCARD batching.** `active_label_names_on` and
+   `active_reltype_names_on` issue all `SCARD` calls through a single
+   slot-local `RedisPipeline`, eliminating the previous N-round-trip
+   amplification. A TTL cache was rejected because cross-node coherence is not
+   solvable in-process.
+
+5. **Operator finalize-delete endpoint.** Stuck `_deleting` markers are no
+   longer cleared automatically by audit. Instead, operators run
+   `POST /admin/graphs/{name}/finalize-delete?confirm=true` after audit
+   reports `deletingOrphaned=true`. The endpoint re-validates orphaned state
+   under a fresh lock+fence before sweeping `G:{g}:*` and removing the name
+   from `__sd2_registry:graphs`.
+
+### What did not change
+
+- The five original cluster routing rules still apply.
+- The bulk-path partial-write residual risk still exists; it is bounded by the
+  lease-loss window plus the audit/repair safety net.
+- `__sd2_registry:graphs` still lives in a different slot and is never
+  co-pipelined with per-graph keys (now enforced by the slot guard).
+
+### Public contract
+
+The user-facing statement of these guarantees lives in
+[Cluster Consistency Contract](cluster-consistency-contract). The Bolt
+projection is in
+[Bolt Spec — Consistency Contract](specs/sedandelivery-bolt-spec#consistency-contract).

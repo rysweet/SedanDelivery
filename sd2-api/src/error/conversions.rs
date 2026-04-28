@@ -31,6 +31,18 @@ impl From<cypher_core::error::GqlError> for ApiError {
                     format!("graph '{name}' is too large for atomic deletion; use selective deletion instead"),
                 )
             }
+            GqlError::Storage(StorageError::LockFenced { .. }) => {
+                // Fence-token rejection (F1, issue #1769): a stalled writer
+                // tried to land late writes after its lease was stolen. The
+                // operation is fail-closed and the client may retry.
+                ApiError::new(StatusCode::SERVICE_UNAVAILABLE, e.to_string())
+            }
+            GqlError::Storage(StorageError::TransactionConflict) => {
+                ApiError::new(StatusCode::CONFLICT, e.to_string())
+            }
+            GqlError::Storage(StorageError::ConstraintViolation { .. }) => {
+                ApiError::new(StatusCode::CONFLICT, e.to_string())
+            }
             GqlError::Storage(StorageError::Backend { .. }) => {
                 // Sanitize the backend error message at the HTTP API boundary.
                 // In release builds the raw Redis error string (which may contain

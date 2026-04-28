@@ -35,7 +35,7 @@ impl RedisGraphStore {
                     Ok(id) => {
                         valid_ids.push(id_str.as_str());
                         pipe.cmd("HMGET")
-                            .arg(self.kp(key_node(name, id)))
+                            .key(self.kp(key_node(name, id)))
                             .arg("labels")
                             .arg("props");
                     }
@@ -128,7 +128,7 @@ impl RedisGraphStore {
                 match id_str.parse::<u64>() {
                     Ok(id) => {
                         pipe.cmd("HGET")
-                            .arg(self.kp(key_edge(name, id)))
+                            .key(self.kp(key_edge(name, id)))
                             .arg("rel_type");
                         has_cmds = true;
                     }

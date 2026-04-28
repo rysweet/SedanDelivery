@@ -18,6 +18,7 @@ Date: 2026-02-28
 7. [Test Plan](#7-test-plan)
 8. [Deployment](#8-deployment)
 9. [Risk Register](#9-risk-register)
+10. [Consistency Contract](#consistency-contract)
 
 ---
 
@@ -1318,6 +1319,14 @@ pub fn gql_error_to_bolt(err: &GqlError) -> (String, String) {
                 "Neo.TransientError.Transaction.DeadlockDetected".to_string(),
                 e.to_string(),
             ),
+            StorageError::LockFenced { .. } => (
+                // Driver-retryable: tells the client the lease was fenced by a
+                // competing writer. Distinct from TransactionConflict so
+                // operators can correlate retries with the fence-rejected
+                // metric (sd2_redis_lock_fence_rejected_total).
+                "Neo.TransientError.Transaction.LockClientStopped".to_string(),
+                e.to_string(),
+            ),
             _ => (
                 "Neo.DatabaseError.General.UnknownError".to_string(),
                 e.to_string(),
@@ -2411,3 +2420,96 @@ macro_rules! bolt_map {
 - FalkorDB Bolt implementation: https://github.com/FalkorDB/FalkorDB/tree/master/src/bolt
 - bolt-proto Rust crate: https://docs.rs/bolt-proto
 - Neo4j Python driver: https://github.com/neo4j/neo4j-python-driver
+
+---
+
+## Consistency Contract
+
+This section defines the consistency guarantees the Bolt v4.4 surface makes to
+clients of SedanDelivery. It is the Bolt-side projection of the canonical
+[Cluster Consistency Contract](../cluster-consistency-contract).
+
+### Per-Graph Serializability
+
+For any one named graph (selected via the Bolt session `database` field), all
+write transactions are serializable. The mechanism is the per-graph write lock
+at `G:{g}:write_lock`, paired with a monotonic fence counter at
+`G:{g}:write_lock_fence`. The Bolt server holds the lock for the duration of
+each `RUN` that mutates state, renews it every `lock_ttl / 3`, and validates
+both the lease token and fence on every renew and inside every Lua hot-write
+script.
+
+A writer that loses its lease — typically because it stalled past TTL and a
+competing writer acquired — is fenced out at the next checkpoint and its `RUN`
+fails with `Neo.TransientError.Transaction.LockClientStopped`. The standard
+Neo4j driver retry policy applies; the failed transaction is safe to retry on
+the same session.
+
+### No Cross-Graph Transactions
+
+Bolt sessions are scoped to a single `database` (graph) per `RUN`. There is no
+atomic multi-graph commit primitive in this server — a single `RUN` whose
+query writes to multiple graph names is not supported, and attempts to do so
+surface the planner/executor's standard error for unsupported operations
+(typically `Neo.ClientError.Statement.SyntaxError` or
+`Neo.ClientError.Statement.SemanticError` per the mappings in §6.4). Model
+cross-graph atomicity as a single graph with a label discriminator.
+
+### Hot-Write Atomicity
+
+For single-entity writes, the storage layer guarantees slot-local atomicity:
+
+- `CREATE (n:Label {props})` (one node) — atomic across the node hash, the
+  nodes set, the per-label set, and the label registry.
+- `CREATE (a)-[:R {props}]->(b)` (one edge) — atomic across the edge hash, the
+  edges set, the per-reltype set, both adjacency sets, and the reltype registry.
+
+A `MATCH` from another session can never observe a node without its labels or
+an edge without its reverse adjacency. Bulk writes (multi-row `UNWIND CREATE`,
+`LOAD CSV`) are not slot-atomic but are still serialized and fence-protected;
+clients that need atomicity for bulk paths should split the work into
+single-entity writes within a session.
+
+### Behavior Under Failure
+
+| Bolt-visible event | Cause | Driver behavior |
+|---|---|---|
+| `Neo.TransientError.Transaction.LockClientStopped` | Lease fenced by competing writer (new in this hardening package) | Retry transaction once with jitter |
+| Existing `TransactionConflict` mapping (see §6.4) | Lease lost without server-side fence proof | Retry transaction |
+| `Neo.TransientError.Transaction.Timeout` | Query exceeded configured timeout | Retry with longer timeout or refine query |
+| `Neo.ClientError.Database.GraphNotFound` | Graph does not exist or is in `_deleting` state | Recreate graph or run admin audit |
+| `Neo.ClientError.Database.DeleteGraphTooLarge` | `delete_graph` rejected by size guard | Use selective deletion |
+
+A TCP drop mid-`RUN` either rolls back cleanly (Lua hot-write) or leaves a
+bounded, audit-detectable amount of partial state (bulk path). Operators
+recover via the audit/repair endpoints described below.
+
+### Audit and Repair
+
+The Bolt surface does not expose admin operations. Operators use the REST
+admin API for these:
+
+- `POST /admin/graphs/{name}/audit` — detect stale registry members and
+  orphaned `_deleting` markers
+- `POST /admin/graphs/{name}/audit?repair=true` — prune stale entries under the
+  graph write lock
+- `POST /admin/graphs/{name}/finalize-delete?confirm=true` — clear an
+  orphaned `_deleting` marker (operator-confirmed)
+
+See [Admin API](../admin-api) for full schemas, and the
+[stuck `_deleting` runbook](../cluster-write-safety#runbook-clearing-a-stuck-_deleting-marker)
+for the operational procedure.
+
+### What This Contract Does Not Promise
+
+- No snapshot isolation across graphs.
+- No global ordering across graphs.
+- No durability guarantees beyond Redis's own AOF/RDB configuration.
+- No automatic finalize of stuck deletes — `finalize-delete` is always
+  operator-confirmed.
+
+### See Also
+
+- [Cluster Consistency Contract](../cluster-consistency-contract) — full contract
+- [Cluster Write Safety](../cluster-write-safety) — mechanism details
+- [Admin API](../admin-api) — audit and finalize endpoints

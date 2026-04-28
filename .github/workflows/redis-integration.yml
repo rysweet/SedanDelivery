@@ -160,6 +160,12 @@ jobs:
         run: |
           cargo test -p sd2-redis-store
           cargo test -p sd2-redis-store --test cluster_pipeline -- --ignored --nocapture
+          # Cluster consistency hardening (#1769): fence-token rejection,
+          # Lua-atomic hot writes, registry SCARD batching, KeyTagTracker.
+          # These tests are #[ignore]-gated so they don't run in standalone
+          # CI; they MUST run here against the live 3-master cluster — they
+          # are the only automated coverage of the consistency contract.
+          cargo test -p sd2-redis-store --test cluster_consistency_hardening -- --ignored --nocapture
 
       - name: Build sedandelivery-bolt (release)
         run: cargo build --release -p sedandelivery-bolt

@@ -13,8 +13,11 @@ use crate::keys::{key_label_names, key_propidx_manifest, key_reltype_names};
 use crate::lock::WRITE_LOCK_TTL_MS;
 use crate::RedisGraphStore;
 
+mod finalize;
 mod repair;
 mod scan;
+
+pub use finalize::FinalizeDeleteReport;
 
 #[cfg(test)]
 mod tests;

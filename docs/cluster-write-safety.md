@@ -13,11 +13,19 @@ what residual risks still remain.
 - [The Problem: Cluster-Unsafe Pipelines and Metadata Reads](#the-problem-cluster-unsafe-pipelines-and-metadata-reads)
 - [The Fix](#the-fix)
 - [What Keeps Writes Correct](#what-keeps-writes-correct)
+- [Fencing Tokens](#fencing-tokens)
+- [Lua-Atomic Hot Writes](#lua-atomic-hot-writes)
+- [Registry Validation (SCARD Batching)](#registry-validation-scard-batching)
+- [Pipeline Slot Guard](#pipeline-slot-guard)
 - [Residual Risk](#residual-risk)
 - [The Write Lock](#the-write-lock)
 - [Write-Lock Observability](#write-lock-observability)
 - [Delete Size Guard](#delete-size-guard)
+- [Runbook: Clearing a Stuck `_deleting` Marker](#runbook-clearing-a-stuck-_deleting-marker)
 - [Verification](#verification)
+
+> **See also**: the [Cluster Consistency Contract](cluster-consistency-contract)
+> is the canonical user-facing statement of what these mechanisms guarantee.
 
 ---
 
@@ -153,6 +161,126 @@ set cardinality (`SCARD G:{g}:label:{label}` / `SCARD G:{g}:reltype:{type}`).
 
 That means a stale registry entry does not become a false visible label or
 relationship type in query planning.
+
+---
+
+## Fencing Tokens
+
+The per-graph write lock now carries two values, not one:
+
+- **Lease token** — UUIDv4 stored at `G:{g}:write_lock` (unchanged from #745)
+- **Fence** — `u64` from `INCR G:{g}:write_lock_fence` (hash-tagged on `{g}`,
+  same slot as the lock)
+
+Every successful `try_acquire_write_locks` call returns
+`HeldRedisLock { key, token, fence_key, fence }`. Both halves are validated
+server-side via Lua at two checkpoints:
+
+1. **Lease renew** — `CAS_RENEW_SCRIPT` extends to require both the lock key's
+   value to match the lease token *and* the fence key's value to match the
+   acquired fence. A stale fence returns the sentinel `-2`, distinct from the
+   lease-mismatch sentinel `0`.
+2. **Inside every Lua hot-write** — the fence key is passed as an additional
+   `KEYS` entry (for slot-affinity enforcement) and the expected fence value
+   as an `ARGV` entry. The first action of `NODE_CREATE_WITH_LABELS_SCRIPT`
+   and `EDGE_CREATE_WITH_ADJACENCY_SCRIPT` is to compare the live counter
+   against the expected value and `redis.error_reply('STALE_FENCE')` on
+   mismatch.
+
+Either condition surfaces as `StorageError::LockFenced { graph }`, mapped to:
+
+- REST: `423 Locked` with `{"error":"lock_fenced","graph":"<name>"}`
+- Bolt: `Neo.TransientError.Transaction.LockClientStopped`
+- Redis module: `-FENCED <graph>` RESP error
+
+`LockFenced` is **not** `TransactionConflict`. Conflict means "lease lost",
+fence means "lease lost and a server-side counter proved it." The new
+`sd2_redis_lock_fence_rejected_total{graph}` counter is reported separately and
+is **not** classified as a backend error — `scripts/test-resharding-resilience.sh`
+explicitly verifies this so fencing never trips the zero-backend-errors gate.
+
+### Threading scope
+
+The fence is validated at lease-renewal cadence and inside Lua hot-writes,
+**not** on every individual `redis::cmd("HSET" | "SADD" | ...)` site. That is
+the documented hybrid model: a stalled writer is detected within one renewal
+interval, bounded by `lock_ttl / 3` (≈ 1.7 s with the default 5 s lease), and
+any partial writes between checkpoints are bounded by the same lease-loss
+window already documented in ADR-005. The bound has not changed; the fence
+makes detection deterministic and gives operators a distinct metric.
+
+---
+
+## Lua-Atomic Hot Writes
+
+Single-entity creates that previously executed as multi-key cluster pipelines
+are now slot-local Lua scripts:
+
+| Path | Source | Script |
+|---|---|---|
+| `CREATE (n:Label1:Label2 {props})` (one node) | `sd2-redis-store/src/writes/nodes/create.rs` | `NODE_CREATE_WITH_LABELS_SCRIPT` |
+| `CREATE (a)-[:R {props}]->(b)` (one edge) | `sd2-redis-store/src/writes/edges/create.rs` | `EDGE_CREATE_WITH_ADJACENCY_SCRIPT` |
+
+Because all keys touched by either script share the `{g}` hash tag, the script
+runs inside a single Redis slot and is fully atomic. This closes the previously
+documented partial-write windows where:
+
+- a `MATCH (n:Label)` could see a node before its label set update landed, or
+- a `MATCH (a)-[:R]->(b)` could see the edge hash before the reverse adjacency
+  was written.
+
+Scripts are dispatched via `redis::Script::new(...)` (lazy `EVALSHA` with
+`NOSCRIPT` fallback), and they are the **only** Lua surface that takes a fence
+argument. KEYS are populated exclusively from `keys::*` helpers; ARGV never
+contains an executable expression.
+
+### What is not Lua-ified
+
+Bulk and manifest paths are intentionally untouched — `UNWIND ... CREATE`
+batches, `LOAD CSV` imports, and `delete_graph` cleanup walks remain
+slot-local pipelines. They inherit fence protection at lease-renewal cadence
+(see above). The trade-off is documented in
+[ADR-005](ADR-005-cluster-pipeline-atomicity).
+
+---
+
+## Registry Validation (SCARD Batching)
+
+`active_label_names_on` and `active_reltype_names_on` previously issued one
+`SCARD` per registry member — `N` round-trips per planner call. They now
+pipeline all `SCARD` calls in a single slot-local `RedisPipeline`. Every key is
+of the form `G:{g}:label:{label}` or `G:{g}:reltype:{type}`, so the batch
+shares the `{g}` hash tag and dispatches in one round-trip.
+
+### Why pipeline batching, not a TTL cache
+
+A small in-process TTL cache on `(graph, label)` would also fix the
+amplification, but it introduces a cache-coherence bug across cluster nodes:
+a writer on node A could remove a label, while a reader on node B continues to
+see it for the cache lifetime. The slot-local pipeline gives the same
+round-trip win without a coherence problem, so the simpler design wins.
+
+This is recorded in the implementation as the chosen option (a) from the
+hardening package design doc.
+
+---
+
+## Pipeline Slot Guard
+
+`RedisPipeline` now has an opt-in `key(&str)` builder method that records the
+key into a tracked `Vec<String>` and forwards to the underlying `arg(...)`. At
+`query()` time:
+
+- `debug_assert!` all recorded keys share the same `{...}` hash tag.
+- A pipeline that mixes `__sd2_registry:graphs` with any per-graph
+  `G:{...}:*` key panics in debug and increments
+  `sd2_redis_pipeline_cross_slot_total` in release.
+
+Hot mutating call sites are migrated to use `.key()` for any argument that is a
+Redis key. Legacy untyped `.arg()` sites remain valid (and exempt) — the guard
+is positive enforcement on the paths most likely to regress, not a hard
+rewrite. A unit test (`tests/pipeline_slot_guard.rs`) ensures cross-slot
+pipelines and registry co-pipelining both panic in debug builds.
 
 ---
 
@@ -356,15 +484,92 @@ variable for the delete threshold; the limit is the compile-time constant
 
 ---
 
+## Runbook: Clearing a Stuck `_deleting` Marker
+
+When a `delete_graph` is interrupted after the `G:{g}:_deleting` marker is set
+but before cleanup finishes, the graph name remains held: `create_graph(g)` is
+rejected and reads treat the graph as gone. The audit endpoint will report this
+as `deletingOrphaned=true`, but it never clears the marker on its own.
+
+### Symptoms
+
+- `POST /admin/graphs/<name>/audit` returns `"deletingOrphaned": true`
+- Bolt clients receive `Neo.ClientError.Database.GraphNotFound` for `<name>`
+- `CREATE GRAPH <name>` returns `409 Conflict` / `-DELETING <name>`
+
+### Procedure
+
+1. **Confirm orphaned state.** Run audit twice, several seconds apart, to rule
+   out a slow in-flight delete:
+
+   ```bash
+   curl -X POST 'http://<api>:3001/admin/graphs/<name>/audit' | jq .
+   sleep 5
+   curl -X POST 'http://<api>:3001/admin/graphs/<name>/audit' | jq .
+   ```
+
+   Both must report `"deletingOrphaned": true`. If the second call shows
+   `false` or the registry counts shrink, a delete is still progressing — wait
+   for it to finish.
+
+2. **Verify no other operator is finalizing.** `finalize-delete` is
+   idempotent, but coordinated operator action prevents duplicate audit log
+   entries.
+
+3. **Run finalize-delete with explicit confirmation:**
+
+   ```bash
+   curl -X POST 'http://<api>:3001/admin/graphs/<name>/finalize-delete?confirm=true'
+   ```
+
+   Expected response:
+
+   ```json
+   {
+     "graph": "<name>",
+     "finalized": true,
+     "deletedKeys": ["G:{<name>}:_deleting"],
+     "registryRemovedFrom": "__sd2_registry:graphs"
+   }
+   ```
+
+4. **Verify reuse.** `CREATE GRAPH <name>` should now succeed.
+
+### Failure modes during the runbook
+
+| Response | Meaning | Action |
+|---|---|---|
+| `400 confirmation_required` | `?confirm=true` missing | Re-run with the query string |
+| `409 graph_not_orphaned` | A delete resumed between audit and finalize | Re-run audit; do not retry finalize |
+| `423 lock_fenced` | Another operator finalized concurrently | Re-run audit; the marker is likely already gone |
+| `404` after success | Re-running finalize | Idempotent; treat as success |
+| `500` | Redis/backend failure mid-sweep | Retry; the operation is idempotent |
+
+The endpoint and its semantics are documented in full at
+[Admin API → finalize-delete](admin-api#post-admingraphsnamefinalize-delete).
+
+---
+
 ## Verification
 
-The final `#745` fix was validated at three layers:
+The cluster consistency hardening package is validated at four layers:
 
 ### Store-level tests
 
 ```bash
 cargo test -p sd2-redis-store
 ```
+
+In addition to the pre-existing suites, this now runs:
+
+- `tests/fence_token.rs` — stale fence rejected at renew and inside Lua hot-writes
+- `tests/lua_hot_writes.rs` — node+labels and edge+adjacency atomicity under
+  simulated mid-write failure (no orphaned node-without-labels or
+  edge-without-adjacency)
+- `tests/pipeline_slot_guard.rs` — cross-slot pipeline panics in debug;
+  registry co-pipelining is rejected
+- `tests/finalize_delete.rs` — happy path, 409 on live graph, idempotent 404,
+  fence-race 423
 
 ### Real cluster regression tests
 
@@ -404,6 +609,8 @@ The validated result for the final fix was:
 - `0` label-mutation errors during the reshard window
 - post-reshard read-back matched the write count
 - `0` backend errors reported via `/metrics`
+- any `sd2_redis_lock_fence_rejected_total` increments are explicitly **not**
+  counted in `sedandelivery_bolt_backend_errors_total`
 
 ### External write-lock telemetry check
 
@@ -420,6 +627,8 @@ acquire-stage backend failures separately.
 
 ## See Also
 
+- [Cluster Consistency Contract](cluster-consistency-contract)
 - [ADR-005: Redis Cluster Routing Safety](ADR-005-cluster-pipeline-atomicity)
 - [Redis Cluster Mode](cluster-mode)
 - [Redis Key Schema](redis-key-schema)
+- [Admin API](admin-api)

@@ -29,6 +29,12 @@ pub enum StorageError {
     #[error("transaction conflict: concurrent write detected, retry the operation")]
     TransactionConflict,
 
+    #[error(
+        "graph '{graph}' write-lock lease expired and was reacquired by another writer; \
+         the stale writer's late mutation was rejected by the fence guard"
+    )]
+    LockFenced { graph: String },
+
     #[error("constraint violation: {msg}")]
     ConstraintViolation { msg: String },
 

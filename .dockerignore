@@ -8,6 +8,13 @@ tests
 !tests/loadtest/Cargo.toml
 !tests/gremlin-tck/Cargo.toml
 !tests/bolt-driver-conformance/Cargo.toml
+!tests/embedded-bench/Cargo.toml
+!tests/embedded-fuzz/Cargo.toml
+!tests/bolt-fuzz/Cargo.toml
+!tests/concurrent-stress/Cargo.toml
+!tests/scalability/Cargo.toml
+!tests/soak/Cargo.toml
+!tests/differential/Cargo.toml
 neo4j-compat-gallery
 *.md
 coverage

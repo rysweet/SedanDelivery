@@ -32,7 +32,15 @@ COPY sedan-gremlin-embedded/Cargo.toml ./sedan-gremlin-embedded/
 COPY tests/loadtest/Cargo.toml        ./tests/loadtest/
 COPY tests/gremlin-tck/Cargo.toml     ./tests/gremlin-tck/
 COPY tests/bolt-driver-conformance/Cargo.toml ./tests/bolt-driver-conformance/
+COPY tests/embedded-bench/Cargo.toml  ./tests/embedded-bench/
+COPY tests/embedded-fuzz/Cargo.toml   ./tests/embedded-fuzz/
+COPY tests/bolt-fuzz/Cargo.toml       ./tests/bolt-fuzz/
+COPY tests/concurrent-stress/Cargo.toml ./tests/concurrent-stress/
+COPY tests/scalability/Cargo.toml     ./tests/scalability/
+COPY tests/soak/Cargo.toml            ./tests/soak/
+COPY tests/differential/Cargo.toml    ./tests/differential/
 COPY examples/embedded_app/Cargo.toml ./examples/embedded_app/
+COPY examples/embedded_quickstart/Cargo.toml ./examples/embedded_quickstart/
 
 # Copy the workspace stub generator and all member Cargo.toml files have already
 # been COPYed above. Generate stub source files for every workspace member +

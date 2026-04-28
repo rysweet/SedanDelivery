@@ -6,6 +6,18 @@ pub(crate) fn key_graph_lock(g: &str) -> String {
     format!("G:{{{g}}}:write_lock")
 }
 
+/// Monotonic per-graph fence counter for the graph write lock.  Bumped every
+/// time the graph lock is acquired (including after TTL-driven reacquire).
+/// Stored next to the lock key (same `{g}` hash tag → same cluster slot) so
+/// acquire + INCR can be performed in a single Lua script.
+///
+/// Hot-write Lua scripts validate the caller's expected fence against this
+/// key as their first action, so a stalled writer whose lease has been stolen
+/// fails closed (cf. ADR-005, `docs/cluster-write-safety.md`).
+pub(crate) fn key_graph_lock_fence(g: &str) -> String {
+    format!("G:{{{g}}}:write_lock_fence")
+}
+
 /// Distributed write-lock key for mutating a single existing node.
 pub(crate) fn key_node_write_lock(g: &str, id: u64) -> String {
     format!("G:{{{g}}}:write_lock:node:{id}")
