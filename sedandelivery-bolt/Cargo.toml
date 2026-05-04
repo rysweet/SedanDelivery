@@ -11,7 +11,7 @@ path = "src/main.rs"
 [dependencies]
 cypher-core        = { path = "../cypher-core" }
 sd2-redis-store = { path = "../sd2-redis-store" }
-redis           = { version = "1.0.5", default-features = false, features = ["tokio-comp"] }
+redis           = { version = "1.2.1", default-features = false, features = ["tokio-comp"] }
 dashmap        = "6"
 tokio         = { version = "1", features = ["full"] }
 tokio-rustls  = "0.26"
