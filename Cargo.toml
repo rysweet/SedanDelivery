@@ -86,7 +86,7 @@ opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 uuid         = { version = "1", features = ["v4", "serde"] }
 
 # Dev / test
-proptest     = "1.6"
+proptest     = "1.11"
 criterion    = { version = "0.8", features = ["html_reports"] }
 insta        = { version = "1.40", features = ["yaml"] }
 cucumber     = "0.22"
