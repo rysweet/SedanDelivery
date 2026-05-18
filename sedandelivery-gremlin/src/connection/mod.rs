@@ -58,10 +58,8 @@ pub async fn handle_connection(
     max_lifetime: Duration,
 ) -> Result<(), ConnectionError> {
     let ws_stream = {
-        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-            max_frame_size: Some(64 * 1024), // 64 KiB — prevents memory exhaustion from oversized frames
-            ..Default::default()
-        };
+        let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+            .max_frame_size(Some(64 * 1024)); // 64 KiB — prevents memory exhaustion from oversized frames
         tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?
     };
     let (mut sink, mut source) = ws_stream.split();
@@ -75,7 +73,7 @@ pub async fn handle_connection(
         let json = serde_json::to_string(&challenge).map_err(|e| {
             ConnectionError::Protocol(protocol::ProtocolError::Internal(e.to_string()))
         })?;
-        sink.send(Message::Text(json)).await?;
+        sink.send(Message::Text(json.into())).await?;
     }
 
     loop {
@@ -95,11 +93,12 @@ pub async fn handle_connection(
 
         match msg {
             Message::Text(text) => {
-                let response = protocol::handler::handle_message(&text, &mut session).await?;
+                let response =
+                    protocol::handler::handle_message(text.as_str(), &mut session).await?;
                 let json = serde_json::to_string(&response).map_err(|e| {
                     ConnectionError::Protocol(protocol::ProtocolError::Internal(e.to_string()))
                 })?;
-                sink.send(Message::Text(json)).await?;
+                sink.send(Message::Text(json.into())).await?;
             }
             Message::Binary(_) => {
                 // GraphSON is text-based; binary frames are not supported in Phase 1.
@@ -111,13 +110,18 @@ pub async fn handle_connection(
                 let json = serde_json::to_string(&response).map_err(|e| {
                     ConnectionError::Protocol(protocol::ProtocolError::Internal(e.to_string()))
                 })?;
-                sink.send(Message::Text(json)).await?;
+                sink.send(Message::Text(json.into())).await?;
             }
             Message::Close(_) => break,
             Message::Ping(data) => {
                 sink.send(Message::Pong(data)).await?;
             }
-            _ => {}
+            // Message is #[non_exhaustive] in tokio-tungstenite 0.28
+            // (Pong / Frame / future variants): ignore unhandled variants
+            // without logging payloads to avoid leaking session data.
+            _ => {
+                tracing::trace!("ignoring unhandled websocket message variant");
+            }
         }
     }
 

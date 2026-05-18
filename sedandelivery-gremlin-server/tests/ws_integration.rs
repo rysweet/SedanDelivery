@@ -91,7 +91,7 @@ async fn send_eval(
             "gremlin": gremlin
         }
     });
-    sink.send(Message::Text(request.to_string()))
+    sink.send(Message::Text(request.to_string().into()))
         .await
         .expect("send failed");
 
@@ -102,7 +102,7 @@ async fn send_eval(
         .expect("ws error");
 
     match msg {
-        Message::Text(text) => serde_json::from_str(&text).expect("invalid JSON response"),
+        Message::Text(text) => serde_json::from_str(text.as_str()).expect("invalid JSON response"),
         other => panic!("expected text response, got {other:?}"),
     }
 }
@@ -161,7 +161,7 @@ async fn eval_missing_gremlin_arg_returns_499() {
         "op": "eval",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string())).await.unwrap();
+    sink.send(Message::Text(request.to_string().into())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -169,7 +169,7 @@ async fn eval_missing_gremlin_arg_returns_499() {
         .unwrap()
         .unwrap();
     let resp: serde_json::Value = match msg {
-        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        Message::Text(t) => serde_json::from_str(t.as_str()).unwrap(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(resp["status"]["code"], 499);
@@ -185,7 +185,7 @@ async fn close_op_returns_204() {
         "op": "close",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string())).await.unwrap();
+    sink.send(Message::Text(request.to_string().into())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -193,7 +193,7 @@ async fn close_op_returns_204() {
         .unwrap()
         .unwrap();
     let resp: serde_json::Value = match msg {
-        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        Message::Text(t) => serde_json::from_str(t.as_str()).unwrap(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(resp["status"]["code"], 204);
@@ -209,7 +209,7 @@ async fn unsupported_op_returns_500() {
         "op": "bytecode",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string())).await.unwrap();
+    sink.send(Message::Text(request.to_string().into())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -217,7 +217,7 @@ async fn unsupported_op_returns_500() {
         .unwrap()
         .unwrap();
     let resp: serde_json::Value = match msg {
-        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        Message::Text(t) => serde_json::from_str(t.as_str()).unwrap(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(resp["status"]["code"], 500);
@@ -242,7 +242,7 @@ async fn malformed_json_returns_498() {
         .unwrap()
         .unwrap();
     let resp: serde_json::Value = match msg {
-        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        Message::Text(t) => serde_json::from_str(t.as_str()).unwrap(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(resp["status"]["code"], 498);
@@ -265,7 +265,7 @@ async fn binary_frame_with_graphson_mime() {
     frame.extend_from_slice(mime);
     frame.extend_from_slice(&payload_bytes);
 
-    sink.send(Message::Binary(frame)).await.unwrap();
+    sink.send(Message::Binary(frame.into())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -273,7 +273,7 @@ async fn binary_frame_with_graphson_mime() {
         .unwrap()
         .unwrap();
     let resp: serde_json::Value = match msg {
-        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        Message::Text(t) => serde_json::from_str(t.as_str()).unwrap(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(resp["status"]["code"], 200);
@@ -287,7 +287,7 @@ async fn ping_gets_pong() {
     let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let (mut sink, mut source) = ws.split();
 
-    sink.send(Message::Ping(vec![1, 2, 3])).await.unwrap();
+    sink.send(Message::Ping(vec![1, 2, 3].into())).await.unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(5), source.next())
         .await
@@ -309,7 +309,7 @@ async fn multiple_requests_on_same_connection() {
             "op": "eval",
             "args": {"gremlin": "g.V().count()"}
         });
-        sink.send(Message::Text(request.to_string())).await.unwrap();
+        sink.send(Message::Text(request.to_string().into())).await.unwrap();
 
         let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
             .await
@@ -317,7 +317,7 @@ async fn multiple_requests_on_same_connection() {
             .unwrap()
             .unwrap();
         let resp: serde_json::Value = match msg {
-            Message::Text(t) => serde_json::from_str(&t).unwrap(),
+            Message::Text(t) => serde_json::from_str(t.as_str()).unwrap(),
             other => panic!("expected text, got {other:?}"),
         };
         assert_eq!(resp["status"]["code"], 200);

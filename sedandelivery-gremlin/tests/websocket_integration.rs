@@ -114,11 +114,11 @@ async fn send_and_receive(
 ) -> serde_json::Value {
     use futures_util::{SinkExt, StreamExt};
 
-    ws.send(Message::Text(msg.to_string())).await.unwrap();
+    ws.send(Message::Text(msg.to_string().into())).await.unwrap();
 
     let response = ws.next().await.expect("no response").expect("ws error");
     match response {
-        Message::Text(text) => serde_json::from_str(&text).expect("invalid JSON response"),
+        Message::Text(text) => serde_json::from_str(text.as_str()).expect("invalid JSON response"),
         other => panic!("expected text message, got {other:?}"),
     }
 }
@@ -385,7 +385,7 @@ async fn test_malformed_json_returns_error() {
     // Send invalid JSON — the server should respond with an error (protocol
     // error is surfaced as a connection error, which closes the connection).
     use futures_util::{SinkExt, StreamExt};
-    ws.send(Message::Text("not valid json {{{".to_string()))
+    ws.send(Message::Text("not valid json {{{".into()))
         .await
         .unwrap();
 
@@ -393,7 +393,7 @@ async fn test_malformed_json_returns_error() {
     let response = ws.next().await;
     match response {
         Some(Ok(Message::Text(text))) => {
-            let resp: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let resp: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
             // Any error code is acceptable (400, 500, etc.)
             let code = resp["status"]["code"].as_u64().unwrap_or(0);
             assert!(code >= 400, "malformed JSON should return error: {resp}");

@@ -25,10 +25,8 @@ pub async fn handle_connection(
     idle_timeout: Duration,
     graph: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-        max_frame_size: Some(64 * 1024),
-        ..Default::default()
-    };
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_frame_size(Some(64 * 1024));
     let ws_stream = tokio_tungstenite::accept_async_with_config(stream, Some(config)).await?;
     let (mut sink, mut source) = ws_stream.split();
 
@@ -43,13 +41,13 @@ pub async fn handle_connection(
         };
 
         let json_text = match &msg {
-            Message::Text(text) => text.clone(),
+            Message::Text(text) => text.as_str().to_string(),
             Message::Binary(data) => match protocol::parse_binary_frame(data) {
                 Ok(text) => text.to_string(),
                 Err(e) => {
                     let resp = protocol::ResponseMessage::error(uuid::Uuid::new_v4(), 498, e);
                     let json = serde_json::to_string(&resp)?;
-                    sink.send(Message::Text(json)).await?;
+                    sink.send(Message::Text(json.into())).await?;
                     continue;
                 }
             },
@@ -58,7 +56,12 @@ pub async fn handle_connection(
                 sink.send(Message::Pong(data.clone())).await?;
                 continue;
             }
-            _ => continue,
+            // Message is #[non_exhaustive] in tokio-tungstenite 0.28
+            // (Pong / Frame / future variants): drop without responding.
+            _ => {
+                tracing::trace!("ignoring unhandled websocket message variant");
+                continue;
+            }
         };
 
         let req = match protocol::parse_request(&json_text) {
@@ -66,14 +69,14 @@ pub async fn handle_connection(
             Err(e) => {
                 let resp = protocol::ResponseMessage::error(uuid::Uuid::new_v4(), 498, e);
                 let json = serde_json::to_string(&resp)?;
-                sink.send(Message::Text(json)).await?;
+                sink.send(Message::Text(json.into())).await?;
                 continue;
             }
         };
 
         let response = handle_request(&req, &store, graph).await;
         let json = serde_json::to_string(&response)?;
-        sink.send(Message::Text(json)).await?;
+        sink.send(Message::Text(json.into())).await?;
     }
 
     Ok(())

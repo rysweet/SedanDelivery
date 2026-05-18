@@ -17,7 +17,7 @@ cypher-core    = { path = "../cypher-core" }
 sd2-redis-store = { path = "../sd2-redis-store" }
 gremlin-core   = { path = "../gremlin-core" }
 tokio          = { workspace = true }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = "0.28"
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 tracing        = { workspace = true }
