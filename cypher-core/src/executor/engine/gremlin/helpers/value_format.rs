@@ -4,6 +4,7 @@
 
 use indexmap::IndexMap;
 
+use crate::error::{ExecutionError, GqlError};
 use crate::types::Value;
 
 /// Convert a Value to a string key for use in Gremlin group() Map output.
@@ -47,7 +48,7 @@ pub(in crate::executor::engine::gremlin) fn merge_gremlin_map_entry(
     map: &mut IndexMap<Box<str>, Value>,
     key: &str,
     incoming: &Value,
-) {
+) -> Result<(), GqlError> {
     match map.entry(Box::from(key)) {
         indexmap::map::Entry::Vacant(entry) => {
             entry.insert(incoming.clone());
@@ -63,11 +64,15 @@ pub(in crate::executor::engine::gremlin) fn merge_gremlin_map_entry(
                 a.extend(b.iter().cloned());
                 entry.insert(Value::List(a));
             }
-            (_, other) => {
-                entry.insert(other.clone());
+            (ref existing, other) => {
+                return Err(GqlError::Execution(ExecutionError::TypeMismatch {
+                    expected: format!("{:?}", std::mem::discriminant(existing)),
+                    actual: format!("{:?}", std::mem::discriminant(other)),
+                }));
             }
         },
     }
+    Ok(())
 }
 
 pub(in crate::executor::engine::gremlin) fn summarize_gremlin_value_shape(
@@ -116,5 +121,112 @@ pub(in crate::executor::engine::gremlin) fn append_gremlin_debug_log(line: &str)
         .open("/tmp/sd-gremlin-debug.log")
     {
         let _ = writeln!(file, "{line}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::{ExecutionError, GqlError};
+
+    // ── Bug #1206: merge_gremlin_map_entry must error on cross-type values ──
+    //
+    // Currently the `(_, other)` catch-all arm silently overwrites the
+    // existing value with the incoming value when types don't match
+    // (e.g., Int + Str). After fix: return Result<(), GqlError> and error
+    // with ExecutionError::TypeMismatch for incompatible types.
+
+    #[test]
+    fn merge_same_type_int_adds() {
+        let mut map = IndexMap::new();
+        map.insert(Box::from("k"), Value::Int(10));
+        let result = merge_gremlin_map_entry(&mut map, "k", &Value::Int(5));
+        assert!(result.is_ok());
+        assert_eq!(map.get("k"), Some(&Value::Int(15)));
+    }
+
+    #[test]
+    fn merge_same_type_float_adds() {
+        let mut map = IndexMap::new();
+        map.insert(Box::from("k"), Value::Float(1.5));
+        let result = merge_gremlin_map_entry(&mut map, "k", &Value::Float(2.5));
+        assert!(result.is_ok());
+        assert_eq!(map.get("k"), Some(&Value::Float(4.0)));
+    }
+
+    #[test]
+    fn merge_list_extends() {
+        let mut map = IndexMap::new();
+        map.insert(Box::from("k"), Value::List(vec![Value::Int(1)]));
+        let result = merge_gremlin_map_entry(&mut map, "k", &Value::List(vec![Value::Int(2)]));
+        assert!(result.is_ok());
+        assert_eq!(
+            map.get("k"),
+            Some(&Value::List(vec![Value::Int(1), Value::Int(2)]))
+        );
+    }
+
+    #[test]
+    fn merge_vacant_entry_inserts() {
+        let mut map = IndexMap::new();
+        let result = merge_gremlin_map_entry(&mut map, "k", &Value::Int(42));
+        assert!(result.is_ok());
+        assert_eq!(map.get("k"), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn merge_cross_type_int_str_returns_error() {
+        // Int existing + Str incoming → should be a TypeMismatch error.
+        let mut map = IndexMap::new();
+        map.insert(Box::from("k"), Value::Int(10));
+        let result = merge_gremlin_map_entry(&mut map, "k", &Value::Str("hello".into()));
+        assert!(
+            result.is_err(),
+            "merging Int with Str should return error, got: {result:?}"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GqlError::Execution(ExecutionError::TypeMismatch { .. })
+            ),
+            "expected TypeMismatch, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn merge_cross_type_float_int_returns_error() {
+        // Float existing + Int incoming → should be a TypeMismatch error.
+        let mut map = IndexMap::new();
+        map.insert(Box::from("k"), Value::Float(1.5));
+        let result = merge_gremlin_map_entry(&mut map, "k", &Value::Int(2));
+        assert!(
+            result.is_err(),
+            "merging Float with Int should return error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn merge_cross_type_str_int_returns_error() {
+        // Str existing + Int incoming → should be a TypeMismatch error.
+        let mut map = IndexMap::new();
+        map.insert(Box::from("k"), Value::Str("hello".into()));
+        let result = merge_gremlin_map_entry(&mut map, "k", &Value::Int(1));
+        assert!(
+            result.is_err(),
+            "merging Str with Int should return error, got: {result:?}"
+        );
+    }
+
+    // ── value_to_map_key regression tests ──────────────────────────────
+
+    #[test]
+    fn value_to_map_key_int() {
+        assert_eq!(&*value_to_map_key(&Value::Int(42)), "42");
+    }
+
+    #[test]
+    fn value_to_map_key_null() {
+        assert_eq!(&*value_to_map_key(&Value::Null), "null");
     }
 }

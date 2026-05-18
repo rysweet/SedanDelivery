@@ -58,7 +58,7 @@ impl<'a> QueryExecutor<'a> {
                 let mut skip_row = false;
                 for (i, val) in path_values.iter().enumerate() {
                     let by_key = &by_keys[i % by_keys.len()];
-                    let projected = self.apply_path_by_key(cx, by_key, val);
+                    let projected = self.apply_path_by_key(cx, by_key, val)?;
                     if matches!(projected, Value::Null) {
                         skip_row = true;
                         break;

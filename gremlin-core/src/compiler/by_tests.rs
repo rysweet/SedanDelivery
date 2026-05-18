@@ -194,3 +194,48 @@ fn by_anon_with_filter_chain() {
 fn by_anon_with_select() {
     let _ = compile("g.V().as(\"a\").out().order().by(__.select(\"a\").values(\"age\"))");
 }
+
+// ── Bug #1192: by() must propagate parse/compile errors ────────────────
+//
+// Currently handle_by_project and handle_by_group use `if let Ok(...)`
+// patterns that silently fall back to simple property expressions when
+// sub-traversal parsing or compilation fails. After fix: use `?` to
+// propagate the error as CompileError.
+
+fn try_compile(input: &str) -> Result<Operator, super::CompileError> {
+    let steps = parse_traversal(input, &no_param).expect("parse_traversal");
+    super::GremlinCompiler::new().compile(&steps)
+}
+
+#[test]
+fn project_by_invalid_traversal_returns_error() {
+    // by() after project() with an unparseable sub-traversal should
+    // return an error instead of silently falling back.
+    let result = try_compile("g.V().project(\"a\").by(__.completelyFakeStep())");
+    assert!(
+        result.is_err(),
+        "invalid by() sub-traversal after project() should produce CompileError, got: {result:?}"
+    );
+}
+
+#[test]
+fn group_key_by_invalid_traversal_returns_error() {
+    // by() after group() with an unparseable sub-traversal for the
+    // group key should return an error.
+    let result = try_compile("g.V().group().by(__.completelyFakeStep())");
+    assert!(
+        result.is_err(),
+        "invalid by() sub-traversal after group() should produce CompileError, got: {result:?}"
+    );
+}
+
+#[test]
+fn group_value_by_invalid_traversal_returns_error() {
+    // Second by() after group() (value aggregation) with an invalid
+    // sub-traversal should return an error.
+    let result = try_compile("g.V().group().by(\"name\").by(__.completelyFakeStep())");
+    assert!(
+        result.is_err(),
+        "invalid value-by() traversal after group() should produce CompileError, got: {result:?}"
+    );
+}

@@ -170,16 +170,22 @@ use gremlin_core::types::GremlinValue;
 
 let no_params = |_: &str| -> Option<GremlinValue> { None };
 
-// Parse errors
-match parse_traversal("not.a.traversal()", &no_params) {
-    Err(TextParseError::UnknownStep(step)) => {
-        eprintln!("unknown step: {step}");
+// Parse errors — including trailing unparsed input
+match parse_traversal("g.V().count())", &no_params) {
+    Err(TextParseError::InvalidArgument(msg)) => {
+        eprintln!("trailing input: {msg}");
     }
     Err(e) => eprintln!("parse error: {e}"),
     Ok(_) => {}
 }
 
-// Compile errors
+// Inner traversal errors propagate (never silently swallowed)
+match parse_traversal(r#"g.V().has("name", P.containing(42, "extra"))"#, &no_params) {
+    Err(e) => eprintln!("inner parse error: {e}"),
+    Ok(_) => {}
+}
+
+// Compile errors — unsupported steps are always reported
 let steps = parse_traversal("g.V().count()", &no_params).unwrap();
 let mut compiler = GremlinCompiler::new();
 match compiler.compile(&steps) {
@@ -190,6 +196,21 @@ match compiler.compile(&steps) {
     Err(e) => eprintln!("compile error: {e}"),
 }
 ```
+
+**Error guarantees:**
+
+- **No silent drops.** Every parse error, compile error, and execution
+  error propagates to the caller. Inner traversals, `by()` modulators,
+  and property resolution all use `?` propagation.
+- **Trailing input rejected.** Unbalanced parentheses or extra tokens
+  after a complete parse produce `InvalidArgument`.
+- **Checked arithmetic.** `group().by(sum)` uses `checked_add` and
+  returns `IntegerOverflow` on `i64` overflow instead of wrapping.
+- **Type-safe merges.** Map entry merging during `group()` and `repeat()`
+  rejects incompatible value types with `TypeMismatch`.
+
+See [`docs/gremlin-error-handling.md`](../docs/gremlin-error-handling.md)
+for the complete error handling reference.
 
 ### Value conversions
 

@@ -194,10 +194,7 @@ pub(crate) fn parse_inner_traversal(
     let tokens = tokenize_steps(traversal_str)?;
     let mut steps = Vec::new();
     for token in &tokens {
-        // Tolerate unknown steps in inner traversals
-        if parse_step_token(token, resolve_param, &mut steps).is_err() {
-            break;
-        }
+        parse_step_token(token, resolve_param, &mut steps)?;
     }
     Ok(steps)
 }

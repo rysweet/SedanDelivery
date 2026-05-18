@@ -102,14 +102,11 @@ impl<'a> QueryExecutor<'a> {
             let path = if by_keys.is_empty() {
                 raw_path
             } else {
-                let transformed: Vec<Value> = raw_path
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, val)| {
-                        let key = &by_keys[i % by_keys.len()];
-                        self.apply_path_by_key(cx, key, &val)
-                    })
-                    .collect();
+                let mut transformed: Vec<Value> = Vec::with_capacity(raw_path.len());
+                for (i, val) in raw_path.into_iter().enumerate() {
+                    let key = &by_keys[i % by_keys.len()];
+                    transformed.push(self.apply_path_by_key(cx, key, &val)?);
+                }
                 // Drop the traverser if any by-key resolution produced Null
                 if !*productive && transformed.iter().any(|v| matches!(v, Value::Null)) {
                     continue;

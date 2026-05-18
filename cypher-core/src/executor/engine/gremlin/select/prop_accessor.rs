@@ -89,7 +89,7 @@ impl<'a> QueryExecutor<'a> {
         // (e.g., ~unfold_values_fold:name, ~toupper:prop)
         // via resolve_prop_on_value instead of raw property access.
         if prop_name.starts_with('~') {
-            let r = self.resolve_prop_on_value(cx, prop_name, &node_val);
+            let r = self.resolve_prop_on_value(cx, prop_name, &node_val)?;
             let r = if let Some(traversal) = by_traversal {
                 self.apply_select_by_traversal(cx, row, src_var, r, traversal)?
             } else {

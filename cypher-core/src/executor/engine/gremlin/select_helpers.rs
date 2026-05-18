@@ -38,15 +38,15 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         key: &str,
         val: &Value,
-    ) -> Value {
+    ) -> Result<Value, GqlError> {
         if key.is_empty() {
-            return val.clone();
+            return Ok(val.clone());
         }
         if let Some(expr) = key.strip_prefix("~math:") {
-            return eval_select_math_expr(expr, val);
+            return Ok(eval_select_math_expr(expr, val));
         }
         if let Some(rest) = key.strip_prefix("~select_map:") {
-            return self.select_map_fields(rest, val);
+            return Ok(self.select_map_fields(rest, val));
         }
         if let Some(rest) = key.strip_prefix("~in_values_min:") {
             if let Some((rel_type, prop)) = rest.split_once(':') {
@@ -55,50 +55,46 @@ impl<'a> QueryExecutor<'a> {
         }
         // Handle ~toupper:prop and ~tolower:prop
         if let Some(prop) = key.strip_prefix("~toupper:") {
-            let inner = self.apply_path_by_key(cx, prop, val);
-            return match inner {
+            let inner = self.apply_path_by_key(cx, prop, val)?;
+            return Ok(match inner {
                 Value::Str(s) => Value::Str(s.to_uppercase().into_boxed_str()),
                 other => other,
-            };
+            });
         }
         if let Some(prop) = key.strip_prefix("~tolower:") {
-            let inner = self.apply_path_by_key(cx, prop, val);
-            return match inner {
+            let inner = self.apply_path_by_key(cx, prop, val)?;
+            return Ok(match inner {
                 Value::Str(s) => Value::Str(s.to_lowercase().into_boxed_str()),
                 other => other,
-            };
+            });
         }
         // Handle ~unfold_values_fold:prop — collect property from list of nodes
         if let Some(prop) = key.strip_prefix("~unfold_values_fold:") {
             if let Value::List(items) = val {
-                let names: Vec<Value> = items
-                    .iter()
-                    .filter_map(|item| {
-                        let v = self.apply_path_by_key(cx, prop, item);
-                        if matches!(v, Value::Null) {
-                            None
-                        } else {
-                            Some(v)
-                        }
-                    })
-                    .collect();
-                return Value::List(names);
+                let mut names: Vec<Value> = Vec::new();
+                for item in items {
+                    let v = self.apply_path_by_key(cx, prop, item)?;
+                    if !matches!(v, Value::Null) {
+                        names.push(v);
+                    }
+                }
+                return Ok(Value::List(names));
             }
             return self.apply_path_by_key(cx, prop, val);
         }
-        match key {
+        Ok(match key {
             "~label" | "T.label" | "label" => match val {
                 Value::Node(nid) => {
                     if let Ok(Some(node)) = self.store.get_node(cx.graph, *nid) {
                         if let Some(label) = node.labels.into_iter().next() {
-                            return Value::Str(label.into_boxed_str());
+                            return Ok(Value::Str(label.into_boxed_str()));
                         }
                     }
                     Value::Null
                 }
                 Value::Edge(eid) => {
                     if let Ok(Some(edge)) = self.store.get_edge(cx.graph, *eid) {
-                        return Value::Str(edge.rel_type.into_boxed_str());
+                        return Ok(Value::Str(edge.rel_type.into_boxed_str()));
                     }
                     Value::Null
                 }
@@ -123,7 +119,7 @@ impl<'a> QueryExecutor<'a> {
                     Value::Node(nid) => {
                         if let Ok(Some(node)) = self.store.get_node(cx.graph, *nid) {
                             if let Some(v) = node.properties.get(key) {
-                                return v.clone();
+                                return Ok(v.clone());
                             }
                         }
                         Value::Null
@@ -131,7 +127,7 @@ impl<'a> QueryExecutor<'a> {
                     Value::Edge(eid) => {
                         if let Ok(Some(edge)) = self.store.get_edge(cx.graph, *eid) {
                             if let Some(v) = edge.properties.get(key) {
-                                return v.clone();
+                                return Ok(v.clone());
                             }
                         }
                         Value::Null
@@ -139,7 +135,7 @@ impl<'a> QueryExecutor<'a> {
                     _ => val.clone(),
                 }
             }
-        }
+        })
     }
 
     /// Execute `GremlinMatch` — declarative pattern matching with named bindings.
@@ -151,7 +147,7 @@ impl<'a> QueryExecutor<'a> {
         cx: &mut ExecContext<'_>,
         prop_name: &str,
         val: &Value,
-    ) -> Value {
+    ) -> Result<Value, GqlError> {
         self.apply_path_by_key(cx, prop_name, val)
     }
 
@@ -238,25 +234,21 @@ impl<'a> QueryExecutor<'a> {
         rel_type: &str,
         prop: &str,
         val: &Value,
-    ) -> Value {
+    ) -> Result<Value, GqlError> {
         let Value::Node(node_id) = val else {
-            return Value::Null;
+            return Ok(Value::Null);
         };
 
         let rel_types = [rel_type];
-        let incoming = match self.store.in_edges_by_type(cx.graph, *node_id, &rel_types) {
-            Ok(entries) => entries,
-            Err(_) => return Value::Null,
-        };
+        let incoming = self
+            .store
+            .in_edges_by_type(cx.graph, *node_id, &rel_types)?;
         if incoming.is_empty() {
-            return Value::Null;
+            return Ok(Value::Null);
         }
 
         let neighbor_ids: Vec<NodeId> = incoming.iter().map(|entry| entry.neighbor_id).collect();
-        let nodes = match self.store.get_nodes_batch(cx.graph, &neighbor_ids) {
-            Ok(nodes) => nodes,
-            Err(_) => return Value::Null,
-        };
+        let nodes = self.store.get_nodes_batch(cx.graph, &neighbor_ids)?;
 
         let mut best: Option<Value> = None;
         for node in nodes.into_iter().flatten() {
@@ -269,7 +261,7 @@ impl<'a> QueryExecutor<'a> {
             }
         }
 
-        best.unwrap_or(Value::Null)
+        Ok(best.unwrap_or(Value::Null))
     }
 
     fn resolve_in_values_min_for_filter(
@@ -381,7 +373,7 @@ impl<'a> QueryExecutor<'a> {
     ) -> Result<Value, GqlError> {
         if let Some(selected) = row.get(value_alias.as_str()) {
             if by_key.starts_with('~') {
-                return Ok(self.resolve_prop_on_value(cx, by_key, selected));
+                return self.resolve_prop_on_value(cx, by_key, selected);
             }
         }
         let ctx = self.build_filter_ctx(cx.graph, row)?;
@@ -434,7 +426,7 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "", &Value::Int(7));
+        let r = exe.apply_path_by_key(&mut cx, "", &Value::Int(7)).unwrap();
         assert_eq!(r, Value::Int(7));
     }
 
@@ -445,7 +437,9 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~math:_+_", &Value::Int(3));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~math:_+_", &Value::Int(3))
+            .unwrap();
         assert_eq!(r, Value::Float(6.0));
     }
 
@@ -460,7 +454,9 @@ mod tests {
         m.insert("a".into(), Value::Int(1));
         m.insert("b".into(), Value::Int(2));
         m.insert("c".into(), Value::Int(3));
-        let r = exe.apply_path_by_key(&mut cx, "~select_map:a,c", &Value::Map(m));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~select_map:a,c", &Value::Map(m))
+            .unwrap();
         match r {
             Value::Map(m) => {
                 assert_eq!(m.len(), 2);
@@ -479,7 +475,9 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~select_map:a", &Value::Int(7));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~select_map:a", &Value::Int(7))
+            .unwrap();
         assert_eq!(r, Value::Null);
     }
 
@@ -491,7 +489,9 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~toupper:name", &Value::Node(nid));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~toupper:name", &Value::Node(nid))
+            .unwrap();
         assert_eq!(r, Value::Str("ALICE".into()));
     }
 
@@ -503,7 +503,9 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~tolower:name", &Value::Node(nid));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~tolower:name", &Value::Node(nid))
+            .unwrap();
         assert_eq!(r, Value::Str("alice".into()));
     }
 
@@ -515,7 +517,9 @@ mod tests {
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
         // No node with "key" property → inner returns Null which is non-Str
-        let r = exe.apply_path_by_key(&mut cx, "~toupper:age", &Value::Int(99));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~toupper:age", &Value::Int(99))
+            .unwrap();
         assert_eq!(r, Value::Int(99));
     }
 
@@ -531,7 +535,9 @@ mod tests {
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
         let list = Value::List(vec![Value::Node(n1), Value::Node(n2)]);
-        let r = exe.apply_path_by_key(&mut cx, "~unfold_values_fold:name", &list);
+        let r = exe
+            .apply_path_by_key(&mut cx, "~unfold_values_fold:name", &list)
+            .unwrap();
         match r {
             Value::List(items) => {
                 assert_eq!(items.len(), 2);
@@ -550,7 +556,9 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~unfold_values_fold:name", &Value::Node(nid));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~unfold_values_fold:name", &Value::Node(nid))
+            .unwrap();
         assert_eq!(r, Value::Str("Alice".into()));
     }
 
@@ -568,11 +576,17 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~label", &Value::Node(n));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~label", &Value::Node(n))
+            .unwrap();
         assert_eq!(r, Value::Str("Person".into()));
-        let r = exe.apply_path_by_key(&mut cx, "label", &Value::Node(n));
+        let r = exe
+            .apply_path_by_key(&mut cx, "label", &Value::Node(n))
+            .unwrap();
         assert_eq!(r, Value::Str("Person".into()));
-        let r = exe.apply_path_by_key(&mut cx, "T.label", &Value::Edge(eid));
+        let r = exe
+            .apply_path_by_key(&mut cx, "T.label", &Value::Edge(eid))
+            .unwrap();
         assert_eq!(r, Value::Str("REL".into()));
     }
 
@@ -584,7 +598,9 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~label", &Value::Node(n));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~label", &Value::Node(n))
+            .unwrap();
         assert_eq!(r, Value::Null);
     }
 
@@ -595,7 +611,9 @@ mod tests {
         let mut b = ExecutionBudget::unlimited();
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
-        let r = exe.apply_path_by_key(&mut cx, "~label", &Value::Int(42));
+        let r = exe
+            .apply_path_by_key(&mut cx, "~label", &Value::Int(42))
+            .unwrap();
         assert_eq!(r, Value::Int(42));
     }
 
@@ -612,16 +630,19 @@ mod tests {
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "~id", &Value::Node(n)),
+            exe.apply_path_by_key(&mut cx, "~id", &Value::Node(n))
+                .unwrap(),
             Value::Int(n.0 as i64)
         );
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "id", &Value::Edge(eid)),
+            exe.apply_path_by_key(&mut cx, "id", &Value::Edge(eid))
+                .unwrap(),
             Value::Int(eid.0 as i64)
         );
         // Non-node/edge passes through.
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "~id", &Value::Str("x".into())),
+            exe.apply_path_by_key(&mut cx, "~id", &Value::Str("x".into()))
+                .unwrap(),
             Value::Str("x".into())
         );
     }
@@ -638,17 +659,17 @@ mod tests {
         m.insert("~value".into(), Value::Int(99));
         let mv = Value::Map(m);
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "~key", &mv),
+            exe.apply_path_by_key(&mut cx, "~key", &mv).unwrap(),
             Value::Str("k1".into())
         );
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "T.value", &mv),
+            exe.apply_path_by_key(&mut cx, "T.value", &mv).unwrap(),
             Value::Int(99)
         );
         // Map without ~key/~value falls back to clone of the whole map.
         let empty = Value::Map(IndexMap::new());
         assert!(matches!(
-            exe.apply_path_by_key(&mut cx, "~key", &empty),
+            exe.apply_path_by_key(&mut cx, "~key", &empty).unwrap(),
             Value::Map(_)
         ));
     }
@@ -661,7 +682,8 @@ mod tests {
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "~value", &Value::Int(5)),
+            exe.apply_path_by_key(&mut cx, "~value", &Value::Int(5))
+                .unwrap(),
             Value::Int(5)
         );
     }
@@ -675,11 +697,13 @@ mod tests {
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "name", &Value::Node(n)),
+            exe.apply_path_by_key(&mut cx, "name", &Value::Node(n))
+                .unwrap(),
             Value::Str("Alice".into())
         );
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "missing", &Value::Node(n)),
+            exe.apply_path_by_key(&mut cx, "missing", &Value::Node(n))
+                .unwrap(),
             Value::Null
         );
     }
@@ -697,11 +721,13 @@ mod tests {
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut bg, &mut st);
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "w", &Value::Edge(eid)),
+            exe.apply_path_by_key(&mut cx, "w", &Value::Edge(eid))
+                .unwrap(),
             Value::Int(7)
         );
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "missing", &Value::Edge(eid)),
+            exe.apply_path_by_key(&mut cx, "missing", &Value::Edge(eid))
+                .unwrap(),
             Value::Null
         );
     }
@@ -714,7 +740,8 @@ mod tests {
         let mut st = MutationStats::default();
         let mut cx = make_cx(&mut b, &mut st);
         assert_eq!(
-            exe.apply_path_by_key(&mut cx, "name", &Value::Str("hi".into())),
+            exe.apply_path_by_key(&mut cx, "name", &Value::Str("hi".into()))
+                .unwrap(),
             Value::Str("hi".into())
         );
     }
@@ -857,5 +884,89 @@ mod tests {
         assert_eq!(r, Some("v_2".to_string()));
         let r = exe.resolve_label_alias("missing", &aliases, &row);
         assert_eq!(r, None);
+    }
+
+    // ── Bug #1194: resolve_in_values_min must propagate storage errors ─────
+    //
+    // Currently resolve_in_values_min and apply_path_by_key return Value
+    // and silently convert storage errors to Value::Null via
+    // `Err(_) => return Value::Null`. After fix: change signatures to
+    // return Result<Value, GqlError> and propagate errors with `?`.
+
+    #[test]
+    fn apply_path_by_key_in_values_min_propagates_storage_error() {
+        // Use a nonexistent graph name to trigger a storage error.
+        let s = make_store();
+        let nid = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "nonexistent_graph",
+            budget: &mut b,
+            outer_rows: &[],
+            stats: &mut st,
+        };
+        // ~in_values_min:<relType>:<prop> triggers resolve_in_values_min
+        let result = exe.apply_path_by_key(&mut cx, "~in_values_min:KNOWS:name", &Value::Node(nid));
+        // After fix: should be Err (storage error), not Ok(Value::Null)
+        assert!(
+            result.is_err(),
+            "storage error should propagate from apply_path_by_key, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn apply_path_by_key_returns_ok_for_valid_access() {
+        // Regression: valid property access should still work.
+        let s = make_store();
+        let nid = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let result = exe.apply_path_by_key(&mut cx, "name", &Value::Node(nid));
+        // After fix: should be Ok(Value::Str("Alice"))
+        assert!(
+            result.is_ok(),
+            "valid access should return Ok, got: {result:?}"
+        );
+        assert_eq!(result.unwrap(), Value::Str("Alice".into()));
+    }
+
+    #[test]
+    fn apply_path_by_key_empty_key_returns_ok_clone() {
+        // Regression: empty key should return Ok with cloned value.
+        let s = make_store();
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = make_cx(&mut b, &mut st);
+        let result = exe.apply_path_by_key(&mut cx, "", &Value::Int(7));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Value::Int(7));
+    }
+
+    #[test]
+    fn resolve_prop_on_value_propagates_error() {
+        // resolve_prop_on_value delegates to apply_path_by_key,
+        // so it should also return Result<Value, GqlError>.
+        let s = make_store();
+        let nid = alice(&s);
+        let exe = QueryExecutor::new(&s);
+        let mut b = ExecutionBudget::unlimited();
+        let mut st = MutationStats::default();
+        let mut cx = ExecContext {
+            graph: "nonexistent_graph",
+            budget: &mut b,
+            outer_rows: &[],
+            stats: &mut st,
+        };
+        let result =
+            exe.resolve_prop_on_value(&mut cx, "~in_values_min:KNOWS:name", &Value::Node(nid));
+        assert!(
+            result.is_err(),
+            "storage error should propagate from resolve_prop_on_value, got: {result:?}"
+        );
     }
 }

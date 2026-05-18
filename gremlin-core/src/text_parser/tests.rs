@@ -669,3 +669,103 @@ fn invalid_argument_via_bad_p_call() {
     // If parser tolerates it, at least verify it doesn't panic.
     let _ = parse_traversal("g.V().has(\"name\", P.eq())", &no_params);
 }
+
+// ── Bug #1193: parse_inner_traversal must propagate parse errors ───────
+//
+// Currently parse_inner_traversal swallows parse errors via
+// `if parse_step_token(...).is_err() { break }` and returns partial results.
+// After fix: replace with `parse_step_token(...)?` to propagate the error.
+
+#[test]
+fn parse_inner_traversal_propagates_single_unknown_step() {
+    // A completely unknown step should return Err, not Ok(vec![]).
+    let result = parse_inner_traversal("__.completelyFakeStep()", &no_params);
+    assert!(
+        result.is_err(),
+        "expected error for unknown step in inner traversal, got {result:?}"
+    );
+}
+
+#[test]
+fn parse_inner_traversal_propagates_error_after_valid_step() {
+    // Valid step followed by unknown step: must propagate the error
+    // instead of silently returning only the first step.
+    let result = parse_inner_traversal("__.values(\"name\").completelyFakeStep()", &no_params);
+    assert!(
+        result.is_err(),
+        "expected error for unknown step after valid step, got {result:?}"
+    );
+}
+
+#[test]
+fn parse_inner_traversal_without_prefix_propagates_error() {
+    // Without __ prefix, unknown steps should still be propagated.
+    let result = parse_inner_traversal("completelyFakeStep()", &no_params);
+    assert!(
+        result.is_err(),
+        "expected error for unknown step without prefix, got {result:?}"
+    );
+}
+
+// ── Bug #1199: tokenize_steps must detect unbalanced parentheses ──────
+//
+// Currently tokenize_steps uses saturating_sub for ')' which silently
+// absorbs extra close parens, and never checks depth > 0 after the loop.
+// After fix: checked decrement + post-loop depth check.
+
+#[test]
+fn tokenize_unbalanced_open_paren_returns_error() {
+    // Missing close paren — depth > 0 at end of input.
+    let result = super::tokenizer::tokenize_steps("V().has(\"name\"");
+    assert!(
+        result.is_err(),
+        "expected error for unbalanced open paren, got {result:?}"
+    );
+}
+
+#[test]
+fn tokenize_extra_close_paren_returns_error() {
+    // Extra close paren at depth 0.
+    let result = super::tokenizer::tokenize_steps("V())");
+    assert!(
+        result.is_err(),
+        "expected error for extra close paren, got {result:?}"
+    );
+}
+
+#[test]
+fn tokenize_nested_unbalanced_returns_error() {
+    // Multiple levels of unclosed parens.
+    let result = super::tokenizer::tokenize_steps("V().has(\"x\", P.within(1, 2)");
+    assert!(
+        result.is_err(),
+        "expected error for nested unbalanced parens, got {result:?}"
+    );
+}
+
+#[test]
+fn parse_traversal_with_unbalanced_parens_returns_error() {
+    // End-to-end: unbalanced parens in a full traversal string.
+    let result = parse_traversal("g.V().has(\"name\"", &no_params);
+    assert!(
+        result.is_err(),
+        "expected error for unbalanced parens in traversal, got {result:?}"
+    );
+}
+
+#[test]
+fn tokenize_balanced_parens_still_works() {
+    // Regression: balanced parens should continue to work.
+    let result = super::tokenizer::tokenize_steps("V().has(\"name\",\"marko\").out(\"knows\")");
+    assert!(result.is_ok(), "balanced parens should succeed: {result:?}");
+    let tokens = result.unwrap();
+    assert_eq!(tokens.len(), 3);
+}
+
+#[test]
+fn tokenize_empty_parens_still_works() {
+    let result = super::tokenizer::tokenize_steps("V().count()");
+    assert!(result.is_ok());
+    let tokens = result.unwrap();
+    assert_eq!(tokens.len(), 2);
+}

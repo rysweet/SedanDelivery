@@ -50,10 +50,26 @@ Every site is one of:
 | `sd2-api/src/main.rs:263` | infra-bind | `0.0.0.0:3001` bind default |
 | `sd2-api/src/metrics.rs:97` | logged-fallback | Prometheus response builder fallback |
 
-**Total surveyed:** 29 sites
-**Real bugs found:** 1 (already fixed in #1276 + locked down in #1279)
+**Total surveyed:** 29 sites (initial pass) + 6 Gremlin-engine sites (follow-up)
+**Real bugs found:** 7 total
+- 1 in `sd2-redis-store` (fixed in #1276 + locked down in #1279)
+- 6 in Gremlin pipeline (fixed in #1192–#1206; see [Gremlin Error Handling](../gremlin-error-handling.md))
 **Defensive-but-wrong patterns:** 2 (fixed in this PR)
 **Acceptable:** 26
+
+### Gremlin Pipeline Findings (follow-up pass)
+
+| File:Line | Category | Issue | Notes |
+|---|---|---|---|
+| `gremlin-core/src/compiler/steps/by/project.rs` | **silent-bug → fixed in #1192** | `by()` modulator swallowed `CompileError` | `if let Ok(...)` replaced with `?` |
+| `gremlin-core/src/compiler/steps/by/group.rs` | **silent-bug → fixed in #1192** | Same pattern in group `by()` | `if let Ok(...)` replaced with `?` |
+| `gremlin-core/src/text_parser/mod.rs:198` | **silent-bug → fixed in #1193** | `parse_inner_traversal` broke on error | `break` replaced with `?` propagation |
+| `cypher-core/src/executor/engine/gremlin/select_helpers.rs` | **silent-bug → fixed in #1194** | `resolve_in_values_min` returned `Value::Null` on storage error | Now returns `Result<Value, GqlError>` |
+| `gremlin-core/src/text_parser/tokenizer.rs` | **silent-bug → fixed in #1199** | Trailing unparsed input silently dropped | Post-loop depth check added |
+| `cypher-core/src/executor/engine/gremlin/group.rs:183,223` | **silent-bug → fixed in #1205** | `i64` sum overflow in group aggregation | `checked_add` → `IntegerOverflow` error |
+| `cypher-core/src/executor/engine/gremlin/helpers/value_format.rs` | **silent-bug → fixed in #1206** | `merge_gremlin_map_entry` dropped cross-type values | Now returns `Result<(), GqlError>` |
+
+See [Gremlin Error Handling](../gremlin-error-handling.md) for full details.
 
 ## Followups
 

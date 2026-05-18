@@ -180,7 +180,13 @@ impl<'a> QueryExecutor<'a> {
                         let mut use_float = false;
                         for v in &values {
                             match v {
-                                Value::Int(i) => total += i,
+                                Value::Int(i) => {
+                                    total = total.checked_add(*i).ok_or_else(|| {
+                                        GqlError::Execution(ExecutionError::IntegerOverflow {
+                                            context: "Gremlin group sum (value traversal)".into(),
+                                        })
+                                    })?;
+                                }
                                 Value::Float(f) => {
                                     use_float = true;
                                     float_total += f;
@@ -220,7 +226,13 @@ impl<'a> QueryExecutor<'a> {
                         let mut use_float = false;
                         for v in &values {
                             match v {
-                                Value::Int(i) => total += i,
+                                Value::Int(i) => {
+                                    total = total.checked_add(*i).ok_or_else(|| {
+                                        GqlError::Execution(ExecutionError::IntegerOverflow {
+                                            context: "Gremlin group sum".into(),
+                                        })
+                                    })?;
+                                }
                                 Value::Float(f) => {
                                     use_float = true;
                                     float_total += f;
@@ -288,14 +300,14 @@ impl<'a> QueryExecutor<'a> {
                     if let Some(Value::Map(existing)) = output.first().and_then(|f| f.get(&agg_col))
                     {
                         for (ek, ev) in existing {
-                            merge_gremlin_map_entry(&mut merged, ek, ev);
+                            merge_gremlin_map_entry(&mut merged, ek, ev)?;
                         }
                     }
                 } else if let Some(Value::Map(existing)) =
                     self.gremlin_side_effects.borrow().get(&agg_col).cloned()
                 {
                     for (ek, ev) in existing {
-                        merge_gremlin_map_entry(&mut merged, &ek, &ev);
+                        merge_gremlin_map_entry(&mut merged, &ek, &ev)?;
                     }
                 }
                 Value::Map(merged)
@@ -343,5 +355,172 @@ impl<'a> QueryExecutor<'a> {
         out_row.insert(alias.0.clone(), Value::Map(result_map));
         cx.budget.record_row();
         Ok(vec![out_row])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::{Expr, Identifier, Label};
+    use crate::executor::budget::ExecutionBudget;
+    use crate::executor::engine::QueryExecutor;
+    use crate::planner::{AggFunction, Operator};
+    use crate::storage::{GraphStore, InMemoryGraphStore};
+    use indexmap::IndexMap;
+
+    fn make_store() -> InMemoryGraphStore {
+        let s = InMemoryGraphStore::new();
+        s.create_graph("g").unwrap();
+        s
+    }
+
+    /// Build a GremlinGroup operator that groups by a constant key "all"
+    /// and sums the given property from child rows.
+    fn make_sum_group(prop: &str, child: Operator) -> Operator {
+        let alias = Identifier::new("__group");
+        let src_alias = Identifier::new("v_1");
+        // key_expr: constant string "all" so everything goes to one group
+        let key_expr = Expr::Str("all".into());
+        // value_expr: property access on src_alias.prop
+        let value_expr = Expr::Property(
+            Box::new(Expr::Variable(src_alias)),
+            smol_str::SmolStr::new(prop),
+        );
+        Operator::GremlinGroup {
+            key_expr,
+            value_expr,
+            agg_fn: AggFunction::Sum,
+            alias,
+            side_effect_key: None,
+            key_traversal: None,
+            value_traversal: None,
+            productive: false,
+            key_is_identity: false,
+            explicit_fold: false,
+            child: Box::new(child),
+        }
+    }
+
+    // ── Bug #1205: group sum must use checked_add for i64 overflow ─────
+    //
+    // Currently the sum aggregation in exec_gremlin_group uses unchecked
+    // `total += i` which wraps on i64 overflow. After fix: use checked_add
+    // and return ExecutionError::IntegerOverflow on overflow.
+
+    #[test]
+    fn group_sum_normal_values() {
+        // Regression: normal sum should still work.
+        let s = make_store();
+        let mut props1 = IndexMap::new();
+        props1.insert("val".to_string(), Value::Int(10));
+        s.create_node("g", vec!["T".to_string()], props1).unwrap();
+        let mut props2 = IndexMap::new();
+        props2.insert("val".to_string(), Value::Int(20));
+        s.create_node("g", vec!["T".to_string()], props2).unwrap();
+
+        let child = Operator::NodeScan {
+            label: Some(Label::new("T")),
+            alias: Identifier::new("v_1"),
+        };
+        let op = make_sum_group("val", child);
+
+        let exe = QueryExecutor::new(&s);
+        let mut budget = ExecutionBudget::unlimited();
+        let result = exe.execute("g", &op, &mut budget);
+        assert!(result.is_ok(), "normal sum should succeed: {result:?}");
+        let rows = result.unwrap().rows;
+        assert_eq!(rows.len(), 1);
+        // The result map should have key "all" with value Int(30)
+        if let Some(Value::Map(m)) = rows[0].get("__group") {
+            assert_eq!(m.get("all"), Some(&Value::Int(30)));
+        } else {
+            panic!("expected Map result, got: {:?}", rows[0]);
+        }
+    }
+
+    #[test]
+    fn group_sum_i64_overflow_returns_error() {
+        // Two values near i64::MAX that overflow when added.
+        let s = make_store();
+        let mut props1 = IndexMap::new();
+        props1.insert("val".to_string(), Value::Int(i64::MAX));
+        s.create_node("g", vec!["T".to_string()], props1).unwrap();
+        let mut props2 = IndexMap::new();
+        props2.insert("val".to_string(), Value::Int(1));
+        s.create_node("g", vec!["T".to_string()], props2).unwrap();
+
+        let child = Operator::NodeScan {
+            label: Some(Label::new("T")),
+            alias: Identifier::new("v_1"),
+        };
+        let op = make_sum_group("val", child);
+
+        let exe = QueryExecutor::new(&s);
+        let mut budget = ExecutionBudget::unlimited();
+        let result = exe.execute("g", &op, &mut budget);
+        assert!(
+            result.is_err(),
+            "i64 overflow in group sum should return error, got: {result:?}"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GqlError::Execution(ExecutionError::IntegerOverflow { .. })
+            ),
+            "expected IntegerOverflow, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn group_sum_i64_negative_overflow_returns_error() {
+        // Negative overflow: i64::MIN + (-1) overflows.
+        let s = make_store();
+        let mut props1 = IndexMap::new();
+        props1.insert("val".to_string(), Value::Int(i64::MIN));
+        s.create_node("g", vec!["T".to_string()], props1).unwrap();
+        let mut props2 = IndexMap::new();
+        props2.insert("val".to_string(), Value::Int(-1));
+        s.create_node("g", vec!["T".to_string()], props2).unwrap();
+
+        let child = Operator::NodeScan {
+            label: Some(Label::new("T")),
+            alias: Identifier::new("v_1"),
+        };
+        let op = make_sum_group("val", child);
+
+        let exe = QueryExecutor::new(&s);
+        let mut budget = ExecutionBudget::unlimited();
+        let result = exe.execute("g", &op, &mut budget);
+        assert!(
+            result.is_err(),
+            "i64 negative overflow in group sum should return error, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn group_sum_max_value_no_overflow() {
+        // i64::MAX + 0 should NOT overflow.
+        let s = make_store();
+        let mut props1 = IndexMap::new();
+        props1.insert("val".to_string(), Value::Int(i64::MAX));
+        s.create_node("g", vec!["T".to_string()], props1).unwrap();
+        let mut props2 = IndexMap::new();
+        props2.insert("val".to_string(), Value::Int(0));
+        s.create_node("g", vec!["T".to_string()], props2).unwrap();
+
+        let child = Operator::NodeScan {
+            label: Some(Label::new("T")),
+            alias: Identifier::new("v_1"),
+        };
+        let op = make_sum_group("val", child);
+
+        let exe = QueryExecutor::new(&s);
+        let mut budget = ExecutionBudget::unlimited();
+        let result = exe.execute("g", &op, &mut budget);
+        assert!(
+            result.is_ok(),
+            "i64::MAX + 0 should not overflow: {result:?}"
+        );
     }
 }

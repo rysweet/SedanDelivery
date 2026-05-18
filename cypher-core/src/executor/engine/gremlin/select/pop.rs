@@ -86,7 +86,7 @@ impl<'a> QueryExecutor<'a> {
                         other => other,
                     }
                 } else {
-                    self.resolve_prop_on_value(cx, prop_name, &resolved)
+                    self.resolve_prop_on_value(cx, prop_name, &resolved)?
                 }
             } else {
                 resolved

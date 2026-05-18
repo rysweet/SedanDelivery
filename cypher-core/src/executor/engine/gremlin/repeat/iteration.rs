@@ -100,7 +100,7 @@ impl<'a> QueryExecutor<'a> {
                                 if let Value::Map(m) = v {
                                     let acc = iteration_agg_maps.entry(k.clone()).or_default();
                                     for (mk, mv) in m {
-                                        merge_gremlin_map_entry(acc, mk, mv);
+                                        merge_gremlin_map_entry(acc, mk, mv)?;
                                     }
                                 }
                                 for nr in &mut next {
@@ -123,7 +123,7 @@ impl<'a> QueryExecutor<'a> {
                     if let Value::Map(m) = v {
                         let acc = iteration_agg_maps.entry(k.clone()).or_default();
                         for (mk, mv) in m {
-                            merge_gremlin_map_entry(acc, mk, mv);
+                            merge_gremlin_map_entry(acc, mk, mv)?;
                         }
                     }
                 }

@@ -32,6 +32,9 @@ pub enum ExecutionError {
 
     #[error("node #{id} not found during traversal (graph may have been modified concurrently)")]
     NodeNotFound { id: u64 },
+
+    #[error("integer overflow: {context}")]
+    IntegerOverflow { context: String },
 }
 
 impl ExecutionError {

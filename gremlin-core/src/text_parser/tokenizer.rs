@@ -72,7 +72,12 @@ pub(crate) fn tokenize_steps(input: &str) -> Result<Vec<String>, TextParseError>
                 current.push(ch);
             }
             ')' => {
-                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Err(TextParseError::InvalidArgument(
+                        "unbalanced parentheses: unexpected ')'".into(),
+                    ));
+                }
+                depth -= 1;
                 current.push(ch);
             }
             '.' if depth == 0 => {
@@ -90,6 +95,11 @@ pub(crate) fn tokenize_steps(input: &str) -> Result<Vec<String>, TextParseError>
     let trimmed = current.trim().to_string();
     if !trimmed.is_empty() {
         tokens.push(trimmed);
+    }
+    if depth != 0 {
+        return Err(TextParseError::InvalidArgument(
+            "unbalanced parentheses: missing ')'".into(),
+        ));
     }
     Ok(tokens)
 }

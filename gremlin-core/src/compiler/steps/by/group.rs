@@ -40,22 +40,19 @@ impl GremlinCompiler {
                 // Try parsing __.prefix strings as sub-traversals
                 if key.starts_with("__.") && key.contains('(') {
                     let no_param = |_: &str| -> Option<GremlinValue> { None };
-                    if let Ok(sub_steps) = crate::text_parser::parse_inner_traversal(key, &no_param)
-                    {
-                        if !sub_steps.is_empty() {
-                            let mut sub = self.sub_compiler();
-                            if let Ok(sub_op) = sub.compile_seeded(&sub_steps, &ctx.pre_group_alias)
-                            {
-                                let sub_out_alias = sub.last_alias.clone();
-                                self.absorb(&sub);
-                                if let Some(Operator::GremlinGroup {
-                                    ref mut key_traversal,
-                                    ..
-                                }) = ctx.current
-                                {
-                                    *key_traversal = Some((Box::new(sub_op), sub_out_alias));
-                                }
-                            }
+                    let sub_steps = crate::text_parser::parse_inner_traversal(key, &no_param)
+                        .map_err(|e| CompileError::InvalidSequence(e.to_string()))?;
+                    if !sub_steps.is_empty() {
+                        let mut sub = self.sub_compiler();
+                        let sub_op = sub.compile_seeded(&sub_steps, &ctx.pre_group_alias)?;
+                        let sub_out_alias = sub.last_alias.clone();
+                        self.absorb(&sub);
+                        if let Some(Operator::GremlinGroup {
+                            ref mut key_traversal,
+                            ..
+                        }) = ctx.current
+                        {
+                            *key_traversal = Some((Box::new(sub_op), sub_out_alias));
                         }
                     }
                 } else if let Some(Operator::GremlinGroup {
@@ -99,44 +96,42 @@ impl GremlinCompiler {
             } else if key.starts_with("__.") && key.contains('(') {
                 // __.prefix value-by: parse as sub-traversal
                 let no_param = |_: &str| -> Option<GremlinValue> { None };
-                if let Ok(sub_steps) = crate::text_parser::parse_inner_traversal(key, &no_param) {
-                    if !sub_steps.is_empty() {
-                        let (proj_steps, trailing_agg) = split_trailing_group_value_agg(&sub_steps);
-                        if proj_steps.is_empty() {
-                            if let Some(Operator::GremlinGroup {
-                                ref mut agg_fn,
-                                ref mut explicit_fold,
-                                ..
-                            }) = ctx.current
-                            {
-                                if let Some(agg) = trailing_agg {
-                                    if matches!(agg, AggFunction::Collect) {
-                                        *explicit_fold = true;
-                                    }
-                                    *agg_fn = agg;
+                let sub_steps = crate::text_parser::parse_inner_traversal(key, &no_param)
+                    .map_err(|e| CompileError::InvalidSequence(e.to_string()))?;
+                if !sub_steps.is_empty() {
+                    let (proj_steps, trailing_agg) = split_trailing_group_value_agg(&sub_steps);
+                    if proj_steps.is_empty() {
+                        if let Some(Operator::GremlinGroup {
+                            ref mut agg_fn,
+                            ref mut explicit_fold,
+                            ..
+                        }) = ctx.current
+                        {
+                            if let Some(agg) = trailing_agg {
+                                if matches!(agg, AggFunction::Collect) {
+                                    *explicit_fold = true;
                                 }
+                                *agg_fn = agg;
                             }
-                        } else {
-                            let mut sub = self.sub_compiler();
-                            if let Ok(sub_op) = sub.compile_seeded(proj_steps, &ctx.pre_group_alias)
-                            {
-                                let sub_out_alias = sub.last_alias.clone();
-                                self.absorb(&sub);
-                                if let Some(Operator::GremlinGroup {
-                                    ref mut value_traversal,
-                                    ref mut agg_fn,
-                                    ref mut explicit_fold,
-                                    ..
-                                }) = ctx.current
-                                {
-                                    *value_traversal = Some((Box::new(sub_op), sub_out_alias));
-                                    if let Some(agg) = trailing_agg {
-                                        if matches!(agg, AggFunction::Collect) {
-                                            *explicit_fold = true;
-                                        }
-                                        *agg_fn = agg;
-                                    }
+                        }
+                    } else {
+                        let mut sub = self.sub_compiler();
+                        let sub_op = sub.compile_seeded(proj_steps, &ctx.pre_group_alias)?;
+                        let sub_out_alias = sub.last_alias.clone();
+                        self.absorb(&sub);
+                        if let Some(Operator::GremlinGroup {
+                            ref mut value_traversal,
+                            ref mut agg_fn,
+                            ref mut explicit_fold,
+                            ..
+                        }) = ctx.current
+                        {
+                            *value_traversal = Some((Box::new(sub_op), sub_out_alias));
+                            if let Some(agg) = trailing_agg {
+                                if matches!(agg, AggFunction::Collect) {
+                                    *explicit_fold = true;
                                 }
+                                *agg_fn = agg;
                             }
                         }
                     }
