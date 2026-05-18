@@ -74,7 +74,7 @@ jobs:
             state=$(echo "$pr_info" | jq -r '.state')
             if [ "$state" != "OPEN" ]; then
               echo "  Skipping PR #$pr_num (not open)"
-              ((skipped_count++))
+              skipped_count=$((skipped_count + 1))
               continue
             fi
 
@@ -89,7 +89,7 @@ jobs:
             # Fetch latest changes
             git fetch origin "$base_branch" "$head_branch" || {
               echo "  Failed to fetch branches for PR #$pr_num"
-              ((failed_count++))
+              failed_count=$((failed_count + 1))
               continue
             }
 
@@ -99,7 +99,7 @@ jobs:
 
             if [ "$behind_count" -eq 0 ]; then
               echo "  PR #$pr_num is up to date"
-              ((skipped_count++))
+              skipped_count=$((skipped_count + 1))
               continue
             fi
 
@@ -108,7 +108,7 @@ jobs:
             # Checkout PR branch
             git checkout -B "$head_branch" "origin/$head_branch" || {
               echo "  Failed to checkout $head_branch"
-              ((failed_count++))
+              failed_count=$((failed_count + 1))
               continue
             }
 
@@ -119,15 +119,15 @@ jobs:
               # Push updated branch
               if git push origin "$head_branch"; then
                 echo "  Successfully updated PR #$pr_num"
-                ((updated_count++))
+                updated_count=$((updated_count + 1))
               else
                 echo "  Failed to push updates for PR #$pr_num"
-                ((failed_count++))
+                failed_count=$((failed_count + 1))
                 git merge --abort 2>/dev/null || true
               fi
             else
               echo "  Merge conflict for PR #$pr_num"
-              ((failed_count++))
+              failed_count=$((failed_count + 1))
               git merge --abort
             fi
 

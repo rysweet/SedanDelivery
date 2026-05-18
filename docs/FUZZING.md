@@ -110,6 +110,16 @@ cargo +nightly fuzz tmin cypher_parser artifacts/cypher_parser/crash-<sha>
 Open a bug with the minimized input, the panic message, and the parser
 location (use `RUST_BACKTRACE=1`).
 
+## Known crash fixes
+
+| Parser | Location | Input class | Fix |
+| ------ | -------- | ----------- | --- |
+| `gremlin_text_parser` | `collection.rs` numeric suffix | Multi-byte UTF-8 last char (e.g. `42é`) | `s.get(..s.len()-1)` replaces panicking `&s[..s.len()-1]` |
+
+All crashes discovered by fuzzing are treated as blocking bugs. See
+[Maintain CI Workflows](howto/maintain-ci-workflows.md#gremlin-text-parser-fuzz-safe-numeric-suffix-parsing)
+for the full write-up of the `collection.rs` fix.
+
 ## CI integration
 
 `scripts/fuzz_smoke.sh` is intended for local pre-merge use and for an

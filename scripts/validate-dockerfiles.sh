@@ -29,7 +29,31 @@ mapfile -t MEMBERS < <(
     | sed 's/.*"\(.*\)".*/\1/'
 )
 
+# Workspace members intentionally excluded from Docker builds (test/bench/example
+# crates that are not published as Docker images). Update this list when adding
+# new test or example crates that should not appear in production Dockerfiles.
+DOCKER_WHITELIST=(
+    "tests/embedded-bench"
+    "tests/embedded-fuzz"
+    "tests/bolt-fuzz"
+    "tests/concurrent-stress"
+    "tests/scalability"
+    "tests/soak"
+    "tests/differential"
+    "examples/embedded_quickstart"
+    "tests/bolt-driver-conformance"
+)
+
+is_whitelisted() {
+    local member="$1"
+    for wl in "${DOCKER_WHITELIST[@]}"; do
+        [ "$member" = "$wl" ] && return 0
+    done
+    return 1
+}
+
 echo "Workspace members (${#MEMBERS[@]}): ${MEMBERS[*]}"
+echo "Docker-whitelisted (excluded from checks): ${DOCKER_WHITELIST[*]}"
 echo ""
 
 # ── 2. Check each Dockerfile copies Cargo.lock ───────────────────────────────
@@ -80,6 +104,7 @@ for df in Dockerfile Dockerfile.bolt Dockerfile.sync Dockerfile.api; do
     fi
 
     for member in "${MEMBERS[@]}"; do
+        is_whitelisted "$member" && continue
         member_line=$(grep -n "COPY ${member}/Cargo.toml" "$FILE" | head -1 | cut -d: -f1 || true)
         if [ -z "$member_line" ]; then
             fail "$df: missing 'COPY ${member}/Cargo.toml'"
@@ -90,7 +115,7 @@ for df in Dockerfile Dockerfile.bolt Dockerfile.sync Dockerfile.api; do
         fi
     done
     if [ "$df_failures" -eq 0 ]; then
-        pass "$df: all ${#MEMBERS[@]} workspace Cargo.toml files appear before the first cargo build layer"
+        pass "$df: all non-whitelisted workspace Cargo.toml files appear before the first cargo build layer"
     fi
 done
 echo ""
@@ -118,6 +143,7 @@ echo ""
 
 BIN_MEMBERS=()
 for member in "${MEMBERS[@]}"; do
+    is_whitelisted "$member" && continue
     member_manifest="$REPO_ROOT/$member/Cargo.toml"
     if [ -f "$member_manifest" ] && grep -q '^\[\[bin\]\]' "$member_manifest"; then
         BIN_MEMBERS+=("$member")
@@ -168,6 +194,7 @@ echo ""
 
 DOCKERIGNORE="$REPO_ROOT/.dockerignore"
 for member in "${MEMBERS[@]}"; do
+    is_whitelisted "$member" && continue
     if [[ "$member" == tests/* ]]; then
         if grep -q "!${member}/Cargo.toml" "$DOCKERIGNORE"; then
             pass ".dockerignore re-includes ${member}/Cargo.toml"

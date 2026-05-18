@@ -19,6 +19,12 @@ CI/CD workflows for the SedanDelivery Rust workspace (openCypher query engine ov
 | **Copilot Setup** | `copilot-setup-steps.yml` | Manual dispatch, self-path push | Configure environment for GitHub Copilot Agent |
 | **Update PR Branches** | `update-pr-branches.yml` | Daily schedule (2 AM UTC), manual dispatch | Merge base branch into open PR branches to keep them current |
 
+## Maintenance Notes
+
+- **Arithmetic in `run:` blocks**: Never use `((var++))` or `((var--))` under `set -e` — they return exit code 1 when the pre-increment value is 0, aborting the step. Use `var=$((var + 1))` instead. See [Maintain CI Workflows](../../docs/howto/maintain-ci-workflows.md#github-actions-arithmetic-varvar-vs-varvar--1).
+- **Docker validation whitelist**: `scripts/validate-dockerfiles.sh` has a `DOCKER_WHITELIST` array for workspace members excluded from Docker images. Update it when adding new test/bench/example crates. See [Maintain CI Workflows](../../docs/howto/maintain-ci-workflows.md#docker-validation-whitelist).
+- **Gremlin TCK concurrency**: The cucumber harness uses `--concurrency`, not `--test-threads`. See [Maintain CI Workflows](../../docs/howto/maintain-ci-workflows.md#gremlin-tck-ci-concurrency).
+
 ## Required Secrets
 
 | Secret | Used By | Purpose |

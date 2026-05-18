@@ -49,7 +49,12 @@ pub(crate) fn parse_collection_step_arg(
     // Numeric with type suffix
     if s.len() > 1 {
         let suffix = s.as_bytes()[s.len() - 1];
-        let num_part = &s[..s.len() - 1];
+        // Use s.get() instead of &s[..] to avoid panic when the slice
+        // boundary falls inside a multi-byte UTF-8 character (fuzz fix).
+        let num_part = match s.get(..s.len() - 1) {
+            Some(p) => p,
+            None => return parse_inner_traversal(args_str, resolve_param),
+        };
         if matches!(suffix, b'b' | b's' | b'i' | b'l' | b'L' | b'n') {
             if let Ok(n) = num_part.parse::<i64>() {
                 return Ok(vec![GremlinStep::Constant(GremlinValue::Integer(n))]);
@@ -116,4 +121,73 @@ pub(crate) fn parse_string_arg_list_with_params(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod collection_utf8_safety_tests {
+    use super::parse_collection_step_arg;
+
+    fn no_params(_: &str) -> Option<crate::types::GremlinValue> {
+        None
+    }
+
+    #[test]
+    fn numeric_suffix_with_multibyte_last_char_does_not_panic() {
+        let _ = parse_collection_step_arg("42é", &no_params);
+    }
+
+    #[test]
+    fn numeric_suffix_with_3byte_char_does_not_panic() {
+        let _ = parse_collection_step_arg("7€", &no_params);
+    }
+
+    #[test]
+    fn numeric_suffix_with_4byte_char_does_not_panic() {
+        let _ = parse_collection_step_arg("9𝕏", &no_params);
+    }
+
+    #[test]
+    fn single_multibyte_char_does_not_panic() {
+        let _ = parse_collection_step_arg("é", &no_params);
+    }
+
+    #[test]
+    fn numeric_suffix_with_ascii_suffix_still_works() {
+        let result = parse_collection_step_arg("42L", &no_params).unwrap();
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            crate::bytecode::GremlinStep::Constant(crate::types::GremlinValue::Integer(n)) => {
+                assert_eq!(*n, 42)
+            }
+            other => panic!("expected Constant(Integer(42)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn numeric_suffix_with_float_suffix_still_works() {
+        let result = parse_collection_step_arg("2.75f", &no_params).unwrap();
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            crate::bytecode::GremlinStep::Constant(crate::types::GremlinValue::Float(f)) => {
+                assert!((f - 2.75).abs() < f64::EPSILON)
+            }
+            other => panic!("expected Constant(Float(2.75)), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn empty_string_does_not_panic() {
+        let result = parse_collection_step_arg("", &no_params).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn single_ascii_char_does_not_panic() {
+        let _ = parse_collection_step_arg("L", &no_params);
+    }
+
+    #[test]
+    fn fuzz_regression_cyrillic_suffix() {
+        let _ = parse_collection_step_arg("0ӊ", &no_params);
+    }
 }

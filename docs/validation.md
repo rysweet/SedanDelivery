@@ -37,6 +37,19 @@ cargo test -p cypher-core --test tck                  # openCypher TCK (3903 sce
 cargo bench -p cypher-core -- --test                  # compile + smoke-run benchmarks
 ```
 
+### Dockerfile validation
+
+The Dockerfile validator checks that every deployable workspace member's
+`Cargo.toml` is copied into each Dockerfile before the first `cargo build`
+layer. Test, benchmark, fuzz, and example crates that are not shipped in
+Docker images are excluded via a `DOCKER_WHITELIST` in the script. See
+[Maintain CI Workflows](howto/maintain-ci-workflows.md#docker-validation-whitelist)
+for the full whitelist and instructions for adding new entries.
+
+```bash
+bash scripts/validate-dockerfiles.sh
+```
+
 ---
 
 ## Targeted plan-cache checks
@@ -374,3 +387,5 @@ bash scripts/validate.sh
 - [ADR-001](ADR-001-storage-model.md) — storage model decisions
 - [ADR-002](ADR-002-full-opencypher-compliance.md) — openCypher compliance strategy
 - [Architecture Overview](architecture.md) — crate map, request flows, storage layer
+- [Maintain CI Workflows](howto/maintain-ci-workflows.md) — Docker validation whitelist, arithmetic safety, fuzz hardening
+- [Fuzzing](FUZZING.md) — Fuzz harness setup, known crash fixes, smoke campaigns

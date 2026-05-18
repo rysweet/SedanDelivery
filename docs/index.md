@@ -396,6 +396,7 @@ writing data, viewing in the Fabric portal, REST API access, and monitoring repl
 
 - [**Docker + Rust Reproducible Builds**](concepts/docker-rust-reproducible-builds) — How `Cargo.lock` ensures deterministic builds, the layer-caching pre-warm pattern, and why exit code 101 means Cargo failure
 - [**Fix Docker Exit Code 101**](howto/fix-docker-exit-101) — Step-by-step diagnosis and fix for Cargo compilation failures in Docker
+- [**Maintain CI Workflows**](howto/maintain-ci-workflows) — Docker validation whitelist, GitHub Actions arithmetic safety, Gremlin fuzz hardening, and TCK concurrency
 - [**ghcr-publish Workflow Reference**](reference/ghcr-publish-workflow) — Build matrix, `Cargo.lock` requirements, `--locked` flag, and troubleshooting
 
 ## Source Code
