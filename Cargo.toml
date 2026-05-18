@@ -62,7 +62,7 @@ jiff         = "0.2"
 smol_str     = "0.3"
 
 # SIMD (optional — mark optional in the crate-level Cargo.toml, not here)
-wide         = { version = "1.2" }
+wide         = { version = "1.4" }
 
 # Graph algorithms (executor use only)
 # petgraph 0.6 does not have an "algo" feature — algorithms are compiled by default.
