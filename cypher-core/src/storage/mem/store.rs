@@ -79,6 +79,41 @@ impl InMemoryGraphStore {
         super::edges::create_edge_with_id_impl(self, graph, id, src, dst, rel_type, properties)
     }
 
+    /// Allocate the next node ID without creating a node.
+    ///
+    /// Used by [`PersistentGraphStore`] to write the WAL entry *before* the
+    /// in-memory mutation (write-ahead semantics).
+    pub(crate) fn allocate_node_id(
+        &self,
+        graph: &str,
+    ) -> Result<crate::storage::NodeId, StorageError> {
+        let mut guard = self.write()?;
+        let map = Arc::make_mut(&mut guard);
+        let g = map
+            .get_mut(graph)
+            .ok_or_else(|| StorageError::GraphNotFound {
+                name: graph.to_string(),
+            })?;
+        let id = g.next_node_id(graph)?;
+        Ok(crate::storage::NodeId(id))
+    }
+
+    /// Allocate the next edge ID without creating an edge.
+    pub(crate) fn allocate_edge_id(
+        &self,
+        graph: &str,
+    ) -> Result<crate::storage::EdgeId, StorageError> {
+        let mut guard = self.write()?;
+        let map = Arc::make_mut(&mut guard);
+        let g = map
+            .get_mut(graph)
+            .ok_or_else(|| StorageError::GraphNotFound {
+                name: graph.to_string(),
+            })?;
+        let id = g.next_edge_id(graph)?;
+        Ok(crate::storage::EdgeId(id))
+    }
+
     pub(crate) fn read_snapshot(&self) -> Result<Arc<HashMap<String, GraphInner>>, StorageError> {
         let guard = self
             .inner

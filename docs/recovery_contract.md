@@ -36,31 +36,49 @@ after a successful snapshot.
 | **Replay determinism.** The same WAL replayed into two independent stores yields identical observable state. | `recovery_duplicate_replay_is_deterministic` |
 | **Open-loop idempotence.** Repeated open/close cycles against the same on-disk store always produce the same observable state. | `recovery_repeated_open_close_is_idempotent` |
 
-## Known gaps (follow-ups)
+## Previously-known gaps
 
-These are documented as gaps rather than fixed in this PR to keep scope
-tight (no new public API). Tests are written to accept either the current
-or the desired behavior, so a future fix will not require test changes.
+The following gaps were identified during design review. Items 1–3 are
+resolved. Items 4–7 are addressed by the changes in this PR (issue #1201).
 
-1. **Tolerant torn-tail recovery.** Today, `replay_file` returns
-   `StorageError::Serialization` for a malformed final line. This is safe
-   (no panic, on-disk bytes intact) but causes `open()` to fail. A
-   tolerant implementation should detect the partial-record condition,
-   stop replay at the last good newline boundary, log a warning, and
-   surface success with the prefix state as the live state. See
-   `cypher-core/src/storage/persistent/replay.rs`.
+1. **Tolerant torn-tail recovery.** ✅ Fixed. `replay_wal_file` detects
+   unterminated trailing bytes, truncates to the last clean record boundary,
+   logs a `tracing::warn!`, and replays the committed prefix. Snapshot files
+   use the strict `replay_file` path (a partial snapshot is real corruption).
 
-2. **Snapshot replay ID-sequence coupling.** `replay_entry` for
-   `CreateNode`/`CreateEdge` requires the auto-allocated ID to equal the
-   persisted ID. This works for a single replay but means a WAL cannot be
-   safely replayed twice into the same store (no idempotency at the
-   in-place-mutation level). The duplicate-replay test deliberately uses
-   two independent fresh stores to characterize this.
+2. **Snapshot replay ID-sequence coupling.** ✅ Fixed. `replay_entry` for
+   `CreateNode`/`CreateEdge` now uses `create_node_with_id` /
+   `create_edge_with_id` which bypass the auto-allocator and are idempotent:
+   replaying the same WAL N times into the same store converges on the same
+   state (issue #1701).
 
-3. **WAL framing.** Records are line-delimited JSON. There is no per-record
-   length prefix or checksum, so a torn-tail detector must rely on
-   "newline-terminated" as its only synchronization point. A length-prefixed
-   or CRC-checked framing would make torn-tail detection unambiguous.
+3. **WAL framing.** ✅ Fixed. Each WAL line is prefixed with `CRC:<hex8> `
+   encoding a CRC32C (Castagnoli) checksum (issue #1702). Legacy lines
+   without the prefix are accepted with a one-time warning.
+
+4. **WAL written after mutation.** 🔧 In progress (this PR). All persistent
+   store write methods will follow WAL-first ordering: the WAL entry is
+   appended *before* the in-memory mutation is applied. Create operations
+   use `allocate_node_id()` / `allocate_edge_id()` to obtain the ID ahead
+   of the WAL write. See [storage-correctness.md](storage-correctness.md) §1.
+
+5. **Constraints not persisted.** 🔧 In progress (this PR).
+   `CreateConstraint` and `DropConstraint` WAL entries will be written for
+   constraint mutations. Constraints will be included in snapshots. Replay
+   is idempotent. See [storage-correctness.md](storage-correctness.md) §2.
+
+6. **Snapshot reads not atomic.** 🔧 In progress (this PR).
+   `write_snapshot()` will call `inner.read_snapshot()` once (a cheap `Arc`
+   clone) and iterate the frozen `GraphInner` fields directly. No
+   `GraphStore` trait methods will be called during serialization,
+   eliminating the window for concurrent writers to produce a partial
+   snapshot. See [storage-correctness.md](storage-correctness.md) §3.
+
+7. **Node/edge overwrite without collision check.** 🔧 In progress (this PR).
+   `create_node` / `create_edge` with an explicit `_sd2_id` / `_sd2_eid`
+   that collides with an existing entity will return
+   `StorageError::Backend`. The `_with_id` variants remain idempotent for
+   WAL replay. See [storage-correctness.md](storage-correctness.md) §4.
 
 ## How crashes are simulated
 

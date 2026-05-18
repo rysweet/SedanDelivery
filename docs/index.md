@@ -24,6 +24,8 @@ A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 
 - [**Read-After-Write Routing**](read-after-write-routing) — 5-second freshness window that pins Bolt session reads to the primary after a write, including explicit-transaction behavior, non-default database routing, and the executed outside-in validator
 - [**Routing Context API**](routing-context-api) — `ReadConsistency`, `GraphStore::with_read_consistency(...)`, `route_read`, `route_read_for_graph`, and `READ_AFTER_WRITE_WINDOW` reference for store implementors and test authors
 - [**Redis Key Schema**](redis-key-schema) — Complete reference for Redis keys, hash-tag contract, adjacency encoding, and metadata registries
+- [**Storage Correctness**](storage-correctness) — WAL-first ordering, constraint persistence, atomic snapshots, and entity collision detection
+- [**Recovery Contract**](recovery_contract) — Crash-recovery and WAL-replay guarantees pinned by tests
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, inspect `sd2-{env}-sync`, reuse `GQL_FABRIC_ENDPOINT`, query Fabric, and monitor replication
 - [Validation Guide](validation) — Full test suite: what each layer validates, how to re-run, CI tiers, benchmark baselines

@@ -9,10 +9,9 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use super::wal::{props_to_json, WalEntry};
+use super::wal::{frame_wal_line, props_to_json, WalEntry};
 use crate::error::StorageError;
 use crate::storage::mem::InMemoryGraphStore;
-use crate::storage::GraphStore;
 
 /// Background loop that periodically writes a snapshot and truncates the WAL.
 pub(super) fn snapshot_loop(
@@ -49,6 +48,17 @@ pub(super) fn snapshot_loop(
     }
 }
 
+/// Serialize a WAL entry to JSON, wrap it with CRC32C framing, and write it.
+fn write_framed_entry(file: &mut BufWriter<File>, entry: &WalEntry) -> Result<(), StorageError> {
+    let payload = serde_json::to_string(entry).map_err(|e| StorageError::Serialization {
+        msg: format!("snapshot serialize: {e}"),
+    })?;
+    let framed = frame_wal_line(&payload);
+    writeln!(file, "{}", framed).map_err(|e| StorageError::Backend {
+        msg: format!("snapshot write: {e}"),
+    })
+}
+
 /// Serialize the current graph state to `snapshot.json` via an atomic rename.
 pub(super) fn write_snapshot(
     data_dir: &Path,
@@ -61,75 +71,60 @@ pub(super) fn write_snapshot(
         msg: format!("snapshot create failed: {e}"),
     })?);
 
-    // Serialize by reading all data through the GraphStore trait.
-    let graphs = inner.list_graphs()?;
-    for graph_name in &graphs {
+    // Atomic snapshot: clone the Arc to get a frozen view of all graphs.
+    // Concurrent writes will COW the inner data, leaving this snapshot
+    // immutable (fixes #1203).
+    let snapshot = inner.read_snapshot()?;
+
+    for (graph_name, graph) in snapshot.iter() {
         let entry = WalEntry::CreateGraph {
             name: graph_name.clone(),
         };
-        let line = serde_json::to_string(&entry).map_err(|e| StorageError::Serialization {
-            msg: format!("snapshot serialize: {e}"),
-        })?;
-        writeln!(file, "{}", line).map_err(|e| StorageError::Backend {
-            msg: format!("snapshot write: {e}"),
-        })?;
+        write_framed_entry(&mut file, &entry)?;
 
         // Indexes first (so property indexes are in place before nodes are created)
-        let indexes = inner.list_indexes(graph_name)?;
-        for idx in &indexes {
+        for idx in &graph.indexes {
             let entry = WalEntry::CreateIndex {
                 graph: graph_name.clone(),
                 label: idx.label.clone(),
                 property: idx.property.clone(),
             };
-            let line = serde_json::to_string(&entry).map_err(|e| StorageError::Serialization {
-                msg: format!("snapshot serialize: {e}"),
-            })?;
-            writeln!(file, "{}", line).map_err(|e| StorageError::Backend {
-                msg: format!("snapshot write: {e}"),
-            })?;
+            write_framed_entry(&mut file, &entry)?;
+        }
+
+        // Constraints (after indexes, before nodes)
+        for c in &graph.constraints {
+            let entry = WalEntry::CreateConstraint {
+                graph: graph_name.clone(),
+                label: c.label.clone(),
+                property: c.property.clone(),
+                constraint_type: c.constraint_type.clone(),
+            };
+            write_framed_entry(&mut file, &entry)?;
         }
 
         // Nodes
-        let node_ids = inner.all_node_ids(graph_name)?;
-        for nid in &node_ids {
-            if let Some(node) = inner.get_node(graph_name, *nid)? {
-                let entry = WalEntry::CreateNode {
-                    graph: graph_name.clone(),
-                    labels: node.labels.clone(),
-                    properties: props_to_json(&node.properties),
-                    id: nid.0,
-                };
-                let line =
-                    serde_json::to_string(&entry).map_err(|e| StorageError::Serialization {
-                        msg: format!("snapshot serialize: {e}"),
-                    })?;
-                writeln!(file, "{}", line).map_err(|e| StorageError::Backend {
-                    msg: format!("snapshot write: {e}"),
-                })?;
-            }
+        for (nid, node) in &graph.nodes {
+            let entry = WalEntry::CreateNode {
+                graph: graph_name.clone(),
+                labels: node.labels.clone(),
+                properties: props_to_json(&node.properties),
+                id: *nid,
+            };
+            write_framed_entry(&mut file, &entry)?;
         }
 
         // Edges
-        let edge_ids = inner.all_edge_ids(graph_name)?;
-        for eid in &edge_ids {
-            if let Some(edge) = inner.get_edge(graph_name, *eid)? {
-                let entry = WalEntry::CreateEdge {
-                    graph: graph_name.clone(),
-                    src: edge.src.0,
-                    dst: edge.dst.0,
-                    rel_type: edge.rel_type.clone(),
-                    properties: props_to_json(&edge.properties),
-                    id: eid.0,
-                };
-                let line =
-                    serde_json::to_string(&entry).map_err(|e| StorageError::Serialization {
-                        msg: format!("snapshot serialize: {e}"),
-                    })?;
-                writeln!(file, "{}", line).map_err(|e| StorageError::Backend {
-                    msg: format!("snapshot write: {e}"),
-                })?;
-            }
+        for (eid, edge) in &graph.edges {
+            let entry = WalEntry::CreateEdge {
+                graph: graph_name.clone(),
+                src: edge.src.0,
+                dst: edge.dst.0,
+                rel_type: edge.rel_type.clone(),
+                properties: props_to_json(&edge.properties),
+                id: *eid,
+            };
+            write_framed_entry(&mut file, &entry)?;
         }
     }
 

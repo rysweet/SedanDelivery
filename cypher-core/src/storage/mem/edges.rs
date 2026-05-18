@@ -44,6 +44,13 @@ pub(crate) fn create_edge_impl(
     };
     let edge_id = EdgeId(raw_id);
 
+    // Bug #1204: reject duplicate _sd2_eid before any storage/adjacency mutation.
+    if g.edges.contains_key(&raw_id) {
+        return Err(StorageError::Backend {
+            msg: format!("edge with id {raw_id} already exists"),
+        });
+    }
+
     // Strip internal keys before storing
     let mut clean_props = properties;
     clean_props.shift_remove("_sd2_id");
@@ -295,5 +302,57 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert!(results[0].is_some());
         assert!(results[1].is_none());
+    }
+
+    // ── Bug #1204: Edge collision detection for _sd2_eid ────────────────
+
+    #[test]
+    fn create_edge_with_duplicate_sd2_eid_returns_error() {
+        let store = make_store();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
+
+        let mut props1 = IndexMap::new();
+        props1.insert("_sd2_eid".to_string(), Value::Int(10));
+        let eid = store
+            .create_edge("test", a, b, "FIRST".to_string(), props1)
+            .unwrap();
+        assert_eq!(eid, EdgeId(10));
+
+        // Second create with same _sd2_eid must be rejected
+        let mut props2 = IndexMap::new();
+        props2.insert("_sd2_eid".to_string(), Value::Int(10));
+        let result = store.create_edge("test", a, b, "SECOND".to_string(), props2);
+        assert!(
+            result.is_err(),
+            "must reject duplicate _sd2_eid; got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn create_edge_duplicate_sd2_eid_does_not_corrupt_adj_index() {
+        let store = make_store();
+        let a = store.create_node("test", vec![], IndexMap::new()).unwrap();
+        let b = store.create_node("test", vec![], IndexMap::new()).unwrap();
+
+        let mut props1 = IndexMap::new();
+        props1.insert("_sd2_eid".to_string(), Value::Int(10));
+        store
+            .create_edge("test", a, b, "FIRST".to_string(), props1)
+            .unwrap();
+
+        // Attempt to overwrite with different rel_type
+        let mut props2 = IndexMap::new();
+        props2.insert("_sd2_eid".to_string(), Value::Int(10));
+        let _ = store.create_edge("test", a, b, "SECOND".to_string(), props2);
+
+        // Adjacency list must have exactly 1 out-edge, not duplicates
+        let out = store.out_edges("test", a).unwrap();
+        assert_eq!(out.len(), 1, "must have exactly 1 out-edge, not duplicates");
+        assert_eq!(
+            out[0].rel_type, "FIRST",
+            "original edge type must be preserved"
+        );
     }
 }

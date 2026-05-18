@@ -333,6 +333,35 @@ fn replay_entry(store: &InMemoryGraphStore, entry: WalEntry) -> Result<(), Stora
         } => {
             store.drop_index(&graph, &label, &property)?;
         }
+        WalEntry::CreateConstraint {
+            graph,
+            label,
+            property,
+            constraint_type,
+        } => {
+            // Idempotent: skip if constraint already exists.
+            let existing = store.list_constraints(&graph)?;
+            if !existing
+                .iter()
+                .any(|c| c.label == label && c.property == property)
+            {
+                store.create_constraint(&graph, &label, &property, constraint_type)?;
+            }
+        }
+        WalEntry::DropConstraint {
+            graph,
+            label,
+            property,
+        } => {
+            // Idempotent: skip if constraint already absent.
+            let existing = store.list_constraints(&graph)?;
+            if existing
+                .iter()
+                .any(|c| c.label == label && c.property == property)
+            {
+                store.drop_constraint(&graph, &label, &property)?;
+            }
+        }
     }
     Ok(())
 }

@@ -32,6 +32,13 @@ pub(crate) fn create_node_impl(
     };
     let node_id = NodeId(raw_id);
 
+    // Bug #1204: reject duplicate _sd2_id before any index/storage mutation.
+    if g.nodes.contains_key(&raw_id) {
+        return Err(StorageError::Backend {
+            msg: format!("node with id {raw_id} already exists"),
+        });
+    }
+
     // Strip internal keys before storing
     let mut clean_props = properties;
     clean_props.shift_remove("_sd2_id");

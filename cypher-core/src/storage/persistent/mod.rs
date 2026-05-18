@@ -1,8 +1,9 @@
 //! Persistent graph store — wraps [`InMemoryGraphStore`] with WAL-based disk persistence.
 //!
-//! All reads delegate to the in-memory store (zero disk I/O). All writes first apply to the
-//! in-memory store then append a JSON-line WAL entry. A background thread periodically
-//! snapshots the full state to disk and truncates the WAL.
+//! All reads delegate to the in-memory store (zero disk I/O). All writes
+//! append a JSON-line WAL entry and apply the mutation to the in-memory store.
+//! A background thread periodically snapshots the full state to disk and
+//! truncates the WAL.
 //!
 //! # Recovery
 //!

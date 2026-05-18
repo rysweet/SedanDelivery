@@ -140,3 +140,57 @@ fn all_node_ids_returns_all() {
     ids.sort();
     assert_eq!(ids, vec![a, b]);
 }
+
+// ── Bug #1204: Node collision detection for _sd2_id ─────────────────────
+
+#[test]
+fn create_node_with_duplicate_sd2_id_returns_error() {
+    let store = make_store();
+    let mut props1 = IndexMap::new();
+    props1.insert("_sd2_id".to_string(), Value::Int(5));
+    props1.insert("name".to_string(), Value::Str("Alice".into()));
+    let nid = store
+        .create_node("test", vec!["Person".to_string()], props1)
+        .unwrap();
+    assert_eq!(nid, NodeId(5));
+
+    // Second create with same _sd2_id must be rejected
+    let mut props2 = IndexMap::new();
+    props2.insert("_sd2_id".to_string(), Value::Int(5));
+    props2.insert("name".to_string(), Value::Str("Bob".into()));
+    let result = store.create_node("test", vec!["Person".to_string()], props2);
+    assert!(
+        result.is_err(),
+        "must reject duplicate _sd2_id; got {:?}",
+        result
+    );
+}
+
+#[test]
+fn create_node_duplicate_sd2_id_does_not_corrupt_label_index() {
+    let store = make_store();
+    let mut props1 = IndexMap::new();
+    props1.insert("_sd2_id".to_string(), Value::Int(5));
+    store
+        .create_node("test", vec!["Person".to_string()], props1)
+        .unwrap();
+
+    // Attempt to overwrite with different labels
+    let mut props2 = IndexMap::new();
+    props2.insert("_sd2_id".to_string(), Value::Int(5));
+    let _ = store.create_node("test", vec!["Company".to_string()], props2);
+
+    // Original node must still be findable under its original label
+    let persons = store.find_nodes_by_label("test", "Person").unwrap();
+    assert!(
+        persons.contains(&NodeId(5)),
+        "original node must remain indexed under Person"
+    );
+
+    // Rejected label must NOT be in the index
+    let companies = store.find_nodes_by_label("test", "Company").unwrap();
+    assert!(
+        !companies.contains(&NodeId(5)),
+        "rejected node must not be indexed under Company"
+    );
+}

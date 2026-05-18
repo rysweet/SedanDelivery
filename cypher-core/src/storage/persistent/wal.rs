@@ -91,6 +91,17 @@ pub(super) enum WalEntry {
         label: String,
         property: String,
     },
+    CreateConstraint {
+        graph: String,
+        label: String,
+        property: String,
+        constraint_type: crate::storage::ConstraintType,
+    },
+    DropConstraint {
+        graph: String,
+        label: String,
+        property: String,
+    },
 }
 
 /// A JSON-safe representation of [`Value`]. We only persist property values, which are
