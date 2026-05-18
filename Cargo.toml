@@ -89,7 +89,7 @@ uuid         = { version = "1", features = ["v4", "serde"] }
 proptest     = "1.11"
 criterion    = { version = "0.8", features = ["html_reports"] }
 insta        = { version = "1.47", features = ["yaml"] }
-cucumber     = "0.22"
+cucumber     = "0.23"
 tokio        = { version = "1", features = ["full"] }
 
 [profile.release]
