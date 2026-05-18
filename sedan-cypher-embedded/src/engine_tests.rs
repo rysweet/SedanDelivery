@@ -456,6 +456,79 @@ fn execute_against_unknown_graph_errors() {
     assert!(result.is_err());
 }
 
+// ── execute_with_budget ──────────────────────────────────────────────────
+
+#[test]
+fn execute_with_budget_returns_result() {
+    use cypher_core::executor::ExecutionBudget;
+    use std::time::Duration;
+
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+    let r = engine
+        .execute_with_budget(&store, "test", "RETURN 42 AS n", &mut budget)
+        .unwrap();
+    assert_eq!(r.rows[0]["n"], Value::Int(42));
+}
+
+#[test]
+fn execute_with_budget_uses_plan_cache() {
+    use cypher_core::executor::ExecutionBudget;
+    use std::time::Duration;
+
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let q = "RETURN 'cached' AS msg";
+    let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+    engine
+        .execute_with_budget(&store, "test", q, &mut budget)
+        .unwrap();
+    assert_eq!(engine.cache_len(), 1);
+    let mut budget2 = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+    engine
+        .execute_with_budget(&store, "test", q, &mut budget2)
+        .unwrap();
+    assert_eq!(engine.cache_len(), 1); // cache hit, no new entry
+}
+
+#[test]
+fn execute_with_budget_propagates_parse_error() {
+    use cypher_core::executor::ExecutionBudget;
+    use std::time::Duration;
+
+    let engine = CypherEngine::new();
+    let store = test_store();
+    let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+    let err = engine
+        .execute_with_budget(&store, "test", "TOTALLY BROKEN!!!", &mut budget)
+        .unwrap_err();
+    assert!(matches!(err, GqlError::Parse(_)));
+}
+
+#[test]
+fn execute_with_budget_custom_budget_is_used() {
+    use cypher_core::executor::ExecutionBudget;
+    use std::time::Duration;
+
+    let engine = CypherEngine::new();
+    let store = test_store();
+    // Use a generous budget — verifies the custom budget path runs successfully
+    let mut budget = ExecutionBudget::new(Duration::from_secs(10), 500);
+    engine
+        .execute(&store, "test", "CREATE (:BudgetTest {x: 1})")
+        .unwrap();
+    let r = engine
+        .execute_with_budget(
+            &store,
+            "test",
+            "MATCH (n:BudgetTest) RETURN n.x AS x",
+            &mut budget,
+        )
+        .unwrap();
+    assert_eq!(r.rows[0]["x"], Value::Int(1));
+}
+
 // ── plan cache + DDL invalidation flow ──────────────────────────────────
 
 #[test]

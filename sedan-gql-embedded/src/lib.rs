@@ -22,6 +22,10 @@ pub use gql_engine::{
     GqlError, GraphStore, InMemoryGraphStore, MutationStats, QueryResult, Row, Value,
 };
 
+/// Re-export [`ExecutionBudget`] so callers of [`SedanGql::execute_with_budget`]
+/// don't need a direct `cypher-core` dependency.
+pub use cypher_core::executor::ExecutionBudget;
+
 /// Re-export `ProcedureRegistry` so users of `execute_with_context` don't need
 /// a direct `cypher-core` dependency.
 pub use cypher_core::procedure::ProcedureRegistry;
@@ -30,8 +34,8 @@ pub use cypher_core::procedure::ProcedureRegistry;
 /// needed for most use-cases.
 pub mod prelude {
     pub use crate::{
-        GqlError, GraphStore, InMemoryGraphStore, MutationStats, ProcedureRegistry, QueryResult,
-        Row, SedanGql, Value,
+        ExecutionBudget, GqlError, GraphStore, InMemoryGraphStore, MutationStats,
+        ProcedureRegistry, QueryResult, Row, SedanGql, Value,
     };
 }
 
@@ -95,6 +99,54 @@ impl SedanGql {
         parameters: HashMap<String, Value>,
     ) -> Result<QueryResult, GqlError> {
         gql_engine::execute_with_context(query, store, graph, registry, parameters)
+    }
+
+    /// Execute a query with a caller-supplied execution budget.
+    ///
+    /// Like [`SedanGql::execute`] but uses the provided `budget` instead of
+    /// the default.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use sedan_gql_embedded::prelude::*;
+    ///
+    /// let engine = SedanGql::new();
+    /// let store = InMemoryGraphStore::default();
+    /// store.create_graph("g").unwrap();
+    ///
+    /// let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+    /// let result = engine
+    ///     .execute_with_budget(&store, "g", "RETURN 1 AS x", &mut budget)
+    ///     .unwrap();
+    /// assert_eq!(result.rows[0].get("x"), Some(&Value::Int(1)));
+    /// ```
+    pub fn execute_with_budget(
+        &self,
+        store: &dyn GraphStore,
+        graph: &str,
+        query: &str,
+        budget: &mut ExecutionBudget,
+    ) -> Result<QueryResult, GqlError> {
+        gql_engine::execute_with_budget(query, store, graph, budget)
+    }
+
+    /// Execute a query with parameters, a procedure registry, and a
+    /// caller-supplied execution budget.
+    ///
+    /// Combines the parameter support of [`SedanGql::execute_with_context`]
+    /// with budget control.
+    pub fn execute_with_context_and_budget(
+        &self,
+        store: &dyn GraphStore,
+        graph: &str,
+        query: &str,
+        registry: &ProcedureRegistry,
+        parameters: HashMap<String, Value>,
+        budget: &mut ExecutionBudget,
+    ) -> Result<QueryResult, GqlError> {
+        gql_engine::execute_with_context_and_budget(
+            query, store, graph, registry, parameters, budget,
+        )
     }
 }
 
@@ -287,5 +339,92 @@ mod tests {
         let r2 = e2.execute(&store, "test", "RETURN 2 AS x").unwrap();
         assert_eq!(r1.rows[0].get("x"), Some(&Value::Int(1)));
         assert_eq!(r2.rows[0].get("x"), Some(&Value::Int(2)));
+    }
+
+    // ── execute_with_budget ─────────────────────────────────────────────
+
+    #[test]
+    fn execute_with_budget_returns_result() {
+        use std::time::Duration;
+
+        let engine = SedanGql::new();
+        let store = test_store();
+        let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+        let qr = engine
+            .execute_with_budget(&store, "test", "RETURN 42 AS x", &mut budget)
+            .unwrap();
+        assert_eq!(qr.rows[0].get("x"), Some(&Value::Int(42)));
+    }
+
+    #[test]
+    fn execute_with_budget_propagates_parse_error() {
+        use std::time::Duration;
+
+        let engine = SedanGql::new();
+        let store = test_store();
+        let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+        let err = engine.execute_with_budget(&store, "test", "THIS IS NOT VALID GQL", &mut budget);
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn execute_with_budget_custom_budget_is_used() {
+        use std::time::Duration;
+
+        let engine = SedanGql::new();
+        let store = test_store();
+        engine
+            .execute(&store, "test", "INSERT (:BudgetTest {x: 1})")
+            .unwrap();
+        let mut budget = ExecutionBudget::new(Duration::from_secs(10), 500);
+        let qr = engine
+            .execute_with_budget(
+                &store,
+                "test",
+                "MATCH (n:BudgetTest) RETURN n.x AS x",
+                &mut budget,
+            )
+            .unwrap();
+        assert_eq!(qr.rows[0].get("x"), Some(&Value::Int(1)));
+    }
+
+    #[test]
+    fn execute_with_context_and_budget_binds_parameters() {
+        use std::time::Duration;
+
+        let engine = SedanGql::new();
+        let store = test_store();
+        let registry = ProcedureRegistry::default();
+        let mut params = HashMap::new();
+        params.insert("name".into(), Value::Str("Alice".into()));
+        let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+        let qr = engine
+            .execute_with_context_and_budget(
+                &store,
+                "test",
+                "INSERT (n:Person {name: $name}) RETURN n.name AS name",
+                &registry,
+                params,
+                &mut budget,
+            )
+            .unwrap();
+        assert_eq!(qr.rows.len(), 1);
+        assert_eq!(qr.rows[0].get("name"), Some(&Value::Str("Alice".into())));
+    }
+
+    /// Prelude re-exports `ExecutionBudget` (compile-time check).
+    #[test]
+    fn prelude_reexports_execution_budget() {
+        use crate::prelude::*;
+
+        let _budget = ExecutionBudget::new(std::time::Duration::from_secs(1), 100);
+        let engine = SedanGql::new();
+        let store = InMemoryGraphStore::default();
+        store.create_graph("p").expect("create graph");
+        let mut budget = ExecutionBudget::new(std::time::Duration::from_secs(5), 1_000);
+        let qr = engine
+            .execute_with_budget(&store, "p", "RETURN 1 AS x", &mut budget)
+            .unwrap();
+        assert_eq!(qr.rows[0].get("x"), Some(&Value::Int(1)));
     }
 }

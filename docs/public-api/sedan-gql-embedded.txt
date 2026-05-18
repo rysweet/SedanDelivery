@@ -1,8 +1,11 @@
 pub fn execute(
+pub fn execute_with_budget(
 pub fn execute_with_context(
+pub fn execute_with_context_and_budget(
 pub fn new() -> Self {
 pub mod prelude {
 pub struct SedanGql {
 pub use crate::{
+pub use cypher_core::executor::ExecutionBudget;
 pub use cypher_core::procedure::ProcedureRegistry;
 pub use gql_engine::{

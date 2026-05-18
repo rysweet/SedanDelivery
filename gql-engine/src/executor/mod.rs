@@ -55,13 +55,47 @@ fn run_and_enforce(
     graph: &str,
 ) -> Result<QueryResult, GqlExecutionError> {
     let mut budget = ExecutionBudget::default_budget();
-    let result = executor.execute(graph, &plan.operator, &mut budget)?;
+    run_and_enforce_with_budget(plan, executor, graph, &mut budget)
+}
+
+/// Run the operator tree with a caller-supplied budget and enforce GQL-specific constraints.
+fn run_and_enforce_with_budget(
+    plan: &GqlPlan,
+    executor: &QueryExecutor<'_>,
+    graph: &str,
+    budget: &mut ExecutionBudget,
+) -> Result<QueryResult, GqlExecutionError> {
+    let result = executor.execute(graph, &plan.operator, budget)?;
 
     if plan.mandatory_match && result.rows.is_empty() {
         return Err(GqlExecutionError::MandatoryMatchEmpty);
     }
 
     Ok(result)
+}
+
+/// Execute a planned GQL query with a caller-supplied execution budget.
+pub fn execute_gql_with_budget(
+    plan: &GqlPlan,
+    store: &dyn GraphStore,
+    graph: &str,
+    budget: &mut ExecutionBudget,
+) -> Result<QueryResult, GqlExecutionError> {
+    let executor = QueryExecutor::new(store);
+    run_and_enforce_with_budget(plan, &executor, graph, budget)
+}
+
+/// Execute a planned GQL query with procedure registry, parameters, and a caller-supplied budget.
+pub fn execute_gql_with_context_and_budget(
+    plan: &GqlPlan,
+    store: &dyn GraphStore,
+    graph: &str,
+    registry: &ProcedureRegistry,
+    parameters: HashMap<String, Value>,
+    budget: &mut ExecutionBudget,
+) -> Result<QueryResult, GqlExecutionError> {
+    let executor = QueryExecutor::with_context(store, registry, parameters);
+    run_and_enforce_with_budget(plan, &executor, graph, budget)
 }
 
 #[cfg(test)]

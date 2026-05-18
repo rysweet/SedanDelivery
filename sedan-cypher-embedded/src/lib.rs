@@ -91,7 +91,7 @@
 mod engine;
 
 pub use cypher_core::error::GqlError;
-pub use cypher_core::executor::{MutationStats, QueryResult, Row};
+pub use cypher_core::executor::{ExecutionBudget, MutationStats, QueryResult, Row};
 pub use cypher_core::procedure::ProcedureRegistry;
 pub use cypher_core::storage::{GraphStore, InMemoryGraphStore};
 pub use cypher_core::types::Value;

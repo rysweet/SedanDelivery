@@ -70,6 +70,38 @@ pub fn execute_with_context(
         .map_err(GqlError::Execution)
 }
 
+/// Execute a GQL query with a caller-supplied execution budget.
+///
+/// Like [`execute`] but uses the provided `budget` instead of the default.
+pub fn execute_with_budget(
+    src: &str,
+    store: &dyn GraphStore,
+    graph: &str,
+    budget: &mut cypher_core::executor::ExecutionBudget,
+) -> Result<QueryResult, GqlError> {
+    let gql_query = parser::parse_gql(src).map_err(GqlError::Parse)?;
+    let plan = planner::plan_gql(&gql_query, store, graph).map_err(GqlError::Plan)?;
+    executor::execute_gql_with_budget(&plan, store, graph, budget).map_err(GqlError::Execution)
+}
+
+/// Execute a GQL query with parameters, a procedure registry, and a caller-supplied budget.
+///
+/// Like [`execute_with_context`] but uses the provided `budget` instead of the default.
+pub fn execute_with_context_and_budget(
+    src: &str,
+    store: &dyn GraphStore,
+    graph: &str,
+    registry: &ProcedureRegistry,
+    parameters: HashMap<String, Value>,
+    budget: &mut cypher_core::executor::ExecutionBudget,
+) -> Result<QueryResult, GqlError> {
+    let gql_query = parser::parse_gql(src).map_err(GqlError::Parse)?;
+    let plan = planner::plan_gql_with_context(&gql_query, store, graph, registry, &parameters)
+        .map_err(GqlError::Plan)?;
+    executor::execute_gql_with_context_and_budget(&plan, store, graph, registry, parameters, budget)
+        .map_err(GqlError::Execution)
+}
+
 /// Top-level GQL engine error.
 #[derive(Debug, thiserror::Error)]
 pub enum GqlError {

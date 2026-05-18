@@ -112,6 +112,45 @@ impl CypherEngine {
         QueryExecutor::new(store).execute(graph, &plan, &mut budget)
     }
 
+    /// Parse, plan, and execute an openCypher query with a caller-supplied
+    /// execution budget.
+    ///
+    /// Like [`CypherEngine::execute`] but uses the provided `budget` instead
+    /// of [`ExecutionBudget::default_budget()`]. The plan cache is still used.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use sedan_cypher_embedded::{
+    ///     CypherEngine, ExecutionBudget, GraphStore, InMemoryGraphStore, Value,
+    /// };
+    ///
+    /// let engine = CypherEngine::new();
+    /// let store = InMemoryGraphStore::default();
+    /// store.create_graph("g").unwrap();
+    /// let mut budget = ExecutionBudget::new(Duration::from_secs(5), 1_000);
+    /// let r = engine.execute_with_budget(&store, "g", "RETURN 1 AS n", &mut budget).unwrap();
+    /// assert_eq!(r.rows[0]["n"], Value::Int(1));
+    /// ```
+    pub fn execute_with_budget(
+        &self,
+        store: &dyn GraphStore,
+        graph: &str,
+        query: &str,
+        budget: &mut ExecutionBudget,
+    ) -> Result<QueryResult, GqlError> {
+        let (ast, plan) = if let Some(cached) = self.cache.get(query) {
+            cached
+        } else {
+            let ast = parse_query(query)?;
+            let planner = QueryPlanner::new(store, graph);
+            let plan = planner.plan(&ast)?;
+            self.cache.insert(query, ast.clone(), plan.clone());
+            (ast, plan)
+        };
+        let _ = ast;
+        QueryExecutor::new(store).execute(graph, &plan, budget)
+    }
+
     /// Clear the plan cache.
     ///
     /// Call this after schema-changing DDL operations (e.g. `CREATE INDEX`)
