@@ -44,7 +44,7 @@ repository  = "https://github.com/rysweet/SedanDelivery"
 thiserror    = "2.0"
 
 # Collections
-indexmap     = { version = "2.0", features = ["serde"] }
+indexmap     = { version = "2.14", features = ["serde"] }
 rustc-hash   = "2.1"
 
 # Parsing — hand-written recursive descent (lalrpop rejected: cannot handle Cypher's
