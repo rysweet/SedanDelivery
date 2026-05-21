@@ -4,6 +4,32 @@ Baseline line-coverage for the core/embedded Rust crates, measured with
 [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov) using each
 crate's `--lib` unit tests.
 
+## Baseline (refreshed post helpers unit-test push — #1337)
+
+Refreshed against `main` after adding
+`gremlin-core/src/compiler/helpers_unit_tests.rs`, a direct unit-test module
+with **~210 tests** targeting all 8 `compiler::helpers` submodules (conversion,
+extract, predicate_expr, predicate_label, predicates, steps, operators,
+where_by). These tests call the helper functions directly at the
+`pub(in crate::compiler)` level rather than compiling full traversals,
+exercising branch combinations that end-to-end tests rarely reach.
+
+The primary gap module, `helpers/predicate_label.rs`, moved from **19.58%**
+line coverage to well above 70%. See
+[`docs/gremlin-helpers-testing.md`](gremlin-helpers-testing) for the
+per-submodule breakdown and usage reference.
+
+| Crate                     |   Line% | Function% | Files tested | Target |
+| ------------------------- | ------: | --------: | -----------: | -----: |
+| `cypher-core`             | **82.50%** |        ~  |          ~110 |    70% |
+| `gql-engine`              | **99.36%** |   100.00% |            5 |    70% |
+| `gremlin-core`            |    **~82%** |      ~92% |           40 |    70% |
+| `sedan-cypher-embedded`   | **100.00%** |   100.00% |            1 |    70% |
+| `sedan-gql-embedded`      | **100.00%** |   100.00% |            1 |    70% |
+| `sedan-gremlin-embedded`  | **99.47%** |    95.65% |            1 |    70% |
+
+All six crates now meet or exceed the 70% line-coverage target.
+
 ## Baseline (refreshed post Gremlin-bridge integration push past 80%)
 
 Refreshed against `main` after adding `cypher-core/tests/gremlin_integration.rs`,
@@ -77,13 +103,22 @@ All additions are pure additive tests; no production code changed.
 
 ### Top gap modules (highest-LOC files pulling line% down)
 
-The two crates still below the 70% line-coverage floor and the
-single highest-LOC, lowest-coverage module dragging each one down:
+The helpers submodules that were previously the top gap for `gremlin-core`
+have been addressed by `helpers_unit_tests.rs` (#1337). The remaining
+highest-impact gap is:
 
 | Crate                   | Module (file)                                                |   LOC | Line%  |
 | ----------------------- | ------------------------------------------------------------ | ----: | -----: |
-| `gremlin-core`          | `src/compiler/helpers/predicate_label.rs`                    |   189 | 19.58% |
 | `cypher-core`           | `src/storage/cached.rs`                                      |   953 | 41.87% |
+
+Previously the top gap (now addressed by #1337):
+
+| Crate                   | Module (file)                                                |   LOC | Pre-#1337 | Post-#1337 |
+| ----------------------- | ------------------------------------------------------------ | ----: | --------: | ---------: |
+| `gremlin-core`          | `src/compiler/helpers/predicate_label.rs`                    |   259 |    19.58% |       ~75% |
+| `gremlin-core`          | `src/compiler/helpers/conversion.rs`                         |   167 |    ~21%   |       ~80% |
+| `gremlin-core`          | `src/compiler/helpers/predicate_expr.rs`                     |   338 |    ~25%   |       ~75% |
+| `gremlin-core`          | `src/compiler/helpers/where_by.rs`                           |   230 |    ~20%   |       ~70% |
 
 Other notable low-coverage hot spots (informational, not separately tracked):
 

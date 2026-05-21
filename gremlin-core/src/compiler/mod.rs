@@ -321,6 +321,8 @@ mod filter_tests;
 #[cfg(test)]
 mod helpers_tests;
 #[cfg(test)]
+mod helpers_unit_tests;
+#[cfg(test)]
 mod strings_tests;
 #[cfg(test)]
 mod tests;

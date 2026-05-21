@@ -259,6 +259,40 @@ Steps parsed but not yet compiled: `tree()`, `subgraph()`, `call()`,
 `shortestPath()`, `pageRank()`, `connectedComponent()`, `peerPressure()`,
 `io()`, `dateAdd()`, `dateDiff()`, `toE()`.
 
+## Testing
+
+### Run all tests
+
+```bash
+cargo test -p gremlin-core --lib
+```
+
+### Compiler helpers unit tests
+
+The `compiler::helpers` submodules have a dedicated unit test module
+(`helpers_unit_tests.rs`) with ~210 tests that exercise the helper functions
+directly at the `pub(in crate::compiler)` level. These tests cover:
+
+- **conversion** — `GremlinValue` ↔ `Expr` / `Value` lowering (all 10 value variants)
+- **extract** — `by(traversal)` key extraction, `select` label resolution, `math()` variable collection
+- **predicate_expr** — `Predicate` → `Expr` lowering with null-aware branches
+- **predicate_label** — Label-aware predicate expression construction for `has`/`hasLabel`
+- **predicates** — `GremlinStep` sequence → `Predicate` conversion
+- **steps** — Path tracking detection, label stack analysis, aggregate key prescanning, infix connective preprocessing
+- **operators** — Sack initialization injection, scan insertion, create-alias rewriting, sack-by rewriting
+- **where_by** — `where().by()` target extraction, null-safe equality wrapping, expression rewriting
+
+```bash
+# Run only helpers unit tests
+cargo test -p gremlin-core --lib -- helpers_unit_tests
+
+# Check coverage
+cargo llvm-cov -p gremlin-core --lib --summary-only
+```
+
+See [`docs/gremlin-helpers-testing.md`](../docs/gremlin-helpers-testing.md)
+for the full per-function coverage reference.
+
 ## Benchmarks
 
 Run the parse/compile microbenchmarks:
