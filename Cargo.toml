@@ -79,7 +79,7 @@ crc32c       = "0.6"
 tracing      = "0.1"
 tracing-opentelemetry = "0.32"
 opentelemetry = "0.32"
-opentelemetry_sdk = "0.31"
+opentelemetry_sdk = "0.32"
 opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic"] }
 
 # UUID
