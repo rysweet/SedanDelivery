@@ -210,7 +210,9 @@ match compiler.compile(&steps) {
   rejects incompatible value types with `TypeMismatch`.
 
 See [`docs/gremlin-error-handling.md`](../docs/gremlin-error-handling.md)
-for the complete error handling reference.
+for the complete error handling reference and
+[`docs/gremlin-quote-handling.md`](../docs/gremlin-quote-handling.md)
+for string quoting and escape rules in the text parser.
 
 ### Value conversions
 

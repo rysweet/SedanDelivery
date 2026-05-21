@@ -124,19 +124,13 @@ pub(crate) fn split_step_name_args(token: &str) -> (&str, &str) {
 /// - `has("label", "key", value)` — label + key + value
 pub(crate) fn find_matching_paren(s: &str) -> Option<usize> {
     let mut depth = 0i32;
-    let mut in_string = false;
-    let mut string_char = '"';
+    let mut string_char: Option<char> = None;
+    let mut escape = false;
     for (i, ch) in s.char_indices() {
-        if in_string {
-            if ch == string_char {
-                in_string = false;
-            }
+        if update_string_state(ch, &mut string_char, &mut escape) {
             continue;
         }
-        if ch == '"' || ch == '\'' {
-            in_string = true;
-            string_char = ch;
-        } else if ch == '(' {
+        if ch == '(' {
             depth += 1;
         } else if ch == ')' {
             depth -= 1;
@@ -157,7 +151,29 @@ pub(crate) fn split_predicate_chain(s: &str) -> Vec<(&str, &str)> {
     let mut last_op = "first";
     let bytes = s.as_bytes();
     let mut i = 0;
+    let mut in_string: Option<u8> = None;
+    let mut escape = false;
     while i < bytes.len() {
+        // Byte-level string/escape tracking (mirrors update_string_state).
+        if escape {
+            escape = false;
+            i += 1;
+            continue;
+        }
+        if let Some(q) = in_string {
+            if bytes[i] == b'\\' {
+                escape = true;
+            } else if bytes[i] == q {
+                in_string = None;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            in_string = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
         match bytes[i] {
             b'(' => depth += 1,
             b')' => {

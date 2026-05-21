@@ -769,3 +769,264 @@ fn tokenize_empty_parens_still_works() {
     let tokens = result.unwrap();
     assert_eq!(tokens.len(), 2);
 }
+
+// ===== TDD tests for #1313: quote handling in find_matching_paren =====
+
+#[test]
+fn find_matching_paren_basic() {
+    // Regression: simple paren matching without strings.
+    assert_eq!(super::tokenizer::find_matching_paren("(hello)"), Some(6));
+}
+
+#[test]
+fn find_matching_paren_with_string() {
+    // Regression: string inside parens (no escapes).
+    assert_eq!(
+        super::tokenizer::find_matching_paren(r#"("hello")"#),
+        Some(8)
+    );
+}
+
+#[test]
+fn find_matching_paren_empty_string() {
+    // Regression: empty string inside parens.
+    assert_eq!(super::tokenizer::find_matching_paren(r#"("")"#), Some(3));
+}
+
+#[test]
+fn find_matching_paren_string_with_parens() {
+    // Regression: parens inside a string should not affect depth.
+    assert_eq!(
+        super::tokenizer::find_matching_paren(r#"("a(b)c")"#),
+        Some(8)
+    );
+}
+
+#[test]
+fn find_matching_paren_escaped_double_quote() {
+    // BUG #1313: escaped double quote inside a double-quoted string.
+    // The \" should NOT close the string.
+    // Input bytes: ( " a \ " b " )
+    assert_eq!(
+        super::tokenizer::find_matching_paren(r#"("a\"b")"#),
+        Some(7)
+    );
+}
+
+#[test]
+fn find_matching_paren_escaped_single_quote() {
+    // BUG #1313: escaped single quote inside a single-quoted string.
+    // The \' should NOT close the string.
+    // Input bytes: ( ' a \ ' b ' )
+    assert_eq!(super::tokenizer::find_matching_paren("('a\\'b')"), Some(7));
+}
+
+#[test]
+fn find_matching_paren_escaped_backslash_before_close() {
+    // Escaped backslash (\\) followed by the real closing quote.
+    // Input bytes: ( " a \ \ " )
+    // The \\ is a literal backslash; the next " closes the string.
+    assert_eq!(super::tokenizer::find_matching_paren(r#"("a\\")"#), Some(6));
+}
+
+#[test]
+fn find_matching_paren_escaped_quote_at_end() {
+    // Escaped quote at end of string value: the \" does not close,
+    // the following " does.
+    // Input bytes: ( " a \ " " )
+    assert_eq!(super::tokenizer::find_matching_paren(r#"("a\"")"#), Some(6));
+}
+
+#[test]
+fn find_matching_paren_double_escaped_backslash_then_quote() {
+    // \\\": escaped backslash (\\) + escaped quote (\").
+    // Input bytes: ( " \ \ \ " " )
+    // The \\ is literal backslash, then \" is escaped quote, string continues
+    // until the final ".
+    assert_eq!(
+        super::tokenizer::find_matching_paren(r#"("\\\"")"#),
+        Some(7)
+    );
+}
+
+#[test]
+fn find_matching_paren_nested_parens_with_escaped_quotes() {
+    // Nested parens where inner string has an escaped quote.
+    // Input: (has("k\"v"))
+    assert_eq!(
+        super::tokenizer::find_matching_paren(r#"(has("k\"v"))"#),
+        Some(12)
+    );
+}
+
+#[test]
+fn find_matching_paren_mixed_quotes() {
+    // Single quotes inside double-quoted string — no escaping needed.
+    assert_eq!(
+        super::tokenizer::find_matching_paren(r#"("it's")"#),
+        Some(7)
+    );
+    // Double quotes inside single-quoted string.
+    assert_eq!(
+        super::tokenizer::find_matching_paren(r#"('say "hi"')"#),
+        Some(11)
+    );
+}
+
+// ===== TDD tests for #1313: quote handling in split_predicate_chain =====
+
+#[test]
+fn split_predicate_chain_no_chain() {
+    // Regression: single predicate, no chain.
+    let result = super::tokenizer::split_predicate_chain("P.gt(20)");
+    assert!(
+        result.is_empty(),
+        "single predicate should be empty: {result:?}"
+    );
+}
+
+#[test]
+fn split_predicate_chain_and_chain() {
+    // Regression: normal .and() chain.
+    let result = super::tokenizer::split_predicate_chain("P.gt(20).and(P.lt(40))");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], ("first", "P.gt(20)"));
+    assert_eq!(result[1], ("and", "P.lt(40)"));
+}
+
+#[test]
+fn split_predicate_chain_or_chain() {
+    // Regression: normal .or() chain.
+    let result = super::tokenizer::split_predicate_chain("P.eq(1).or(P.eq(2))");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], ("first", "P.eq(1)"));
+    assert_eq!(result[1], ("or", "P.eq(2)"));
+}
+
+#[test]
+fn split_predicate_chain_string_with_close_paren_and_dot_and() {
+    // BUG #1313: a `)` inside a quoted string drops depth to 0, and the text
+    // after matches `.and(` — this must NOT be treated as a chain.
+    let result = super::tokenizer::split_predicate_chain(r#"P.eq("x).and(evil")"#);
+    assert!(
+        result.is_empty(),
+        "string containing ').and(' should not split: {result:?}"
+    );
+}
+
+#[test]
+fn split_predicate_chain_string_with_close_paren_and_dot_or() {
+    // BUG #1313: same as above but with `.or(` pattern.
+    let result = super::tokenizer::split_predicate_chain(r#"P.eq("x).or(evil")"#);
+    assert!(
+        result.is_empty(),
+        "string containing ').or(' should not split: {result:?}"
+    );
+}
+
+#[test]
+fn split_predicate_chain_string_with_dot_and_no_paren() {
+    // String containing ".and" but not ".and(" — should not split.
+    let result = super::tokenizer::split_predicate_chain(r#"P.eq("sand")"#);
+    assert!(
+        result.is_empty(),
+        "string containing '.and' without paren should not split: {result:?}"
+    );
+}
+
+#[test]
+fn split_predicate_chain_escaped_quote_with_paren() {
+    // Escaped quote followed by `)` — the `)` is still inside the string
+    // because the \" doesn't close it.
+    // Input: P.eq("a\")b")
+    // The string content is: a")b — the \" is an escaped quote.
+    let result = super::tokenizer::split_predicate_chain(r#"P.eq("a\")b")"#);
+    assert!(
+        result.is_empty(),
+        "escaped quote before paren should not split: {result:?}"
+    );
+}
+
+#[test]
+fn split_predicate_chain_adversarial_and_or_in_string() {
+    // Adversarial: string value is literally ".and(.or(" — must not chain-split.
+    let result = super::tokenizer::split_predicate_chain(r#"P.eq(".and(.or(")"#);
+    assert!(
+        result.is_empty(),
+        "adversarial .and(.or( in string must not split: {result:?}"
+    );
+}
+
+// ===== Integration tests: parse_traversal with quote edge cases =====
+
+#[test]
+fn parse_has_with_escaped_double_quote_value() {
+    // End-to-end: has() with escaped double quote in the value string.
+    let steps = parse_traversal(r#"g.V().has("name", "a\"b")"#, &no_params).unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0], GremlinStep::V(None));
+    match &steps[1] {
+        GremlinStep::Has(key, Some(GremlinValue::String(val))) => {
+            assert_eq!(key.as_str(), "name");
+            assert_eq!(val.as_str(), "a\"b");
+        }
+        other => panic!("expected Has with string value, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_has_with_escaped_single_quote_value() {
+    // End-to-end: has() with escaped single quote in the value string.
+    let steps = parse_traversal("g.V().has('name', 'a\\'b')", &no_params).unwrap();
+    assert_eq!(steps.len(), 2);
+    match &steps[1] {
+        GremlinStep::Has(key, Some(GremlinValue::String(val))) => {
+            assert_eq!(key.as_str(), "name");
+            assert_eq!(val.as_str(), "a'b");
+        }
+        other => panic!("expected Has with string value, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_has_with_paren_in_string_value() {
+    // End-to-end: has() where the value string contains parens.
+    let steps = parse_traversal(r#"g.V().has("name", "a(b)c")"#, &no_params).unwrap();
+    assert_eq!(steps.len(), 2);
+    match &steps[1] {
+        GremlinStep::Has(key, Some(GremlinValue::String(val))) => {
+            assert_eq!(key.as_str(), "name");
+            assert_eq!(val.as_str(), "a(b)c");
+        }
+        other => panic!("expected Has with string value, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_has_with_dot_and_in_string_value() {
+    // End-to-end: has() where the value contains ".and(" — must not confuse
+    // predicate chain splitting.
+    let steps = parse_traversal(r#"g.V().has("desc", "demand(supply)")"#, &no_params).unwrap();
+    assert_eq!(steps.len(), 2);
+    match &steps[1] {
+        GremlinStep::Has(key, Some(GremlinValue::String(val))) => {
+            assert_eq!(key.as_str(), "desc");
+            assert_eq!(val.as_str(), "demand(supply)");
+        }
+        other => panic!("expected Has with string value, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_predicate_with_escaped_backslash_before_close_quote() {
+    // Escaped backslash at end of string: \\" means literal \ then close quote.
+    let steps = parse_traversal(r#"g.V().has("path", "c:\\")"#, &no_params).unwrap();
+    assert_eq!(steps.len(), 2);
+    match &steps[1] {
+        GremlinStep::Has(key, Some(GremlinValue::String(val))) => {
+            assert_eq!(key.as_str(), "path");
+            assert_eq!(val.as_str(), "c:\\");
+        }
+        other => panic!("expected Has with string value, got {other:?}"),
+    }
+}
