@@ -48,7 +48,9 @@ fn binary_ping_pong_are_bytes() {
 async fn ping_then_eval_round_trip() {
     let port = start_server().await;
     let url = format!("ws://127.0.0.1:{port}/gremlin");
-    let (ws, _) = tokio_tungstenite::connect_async(&url).await.expect("connect");
+    let (ws, _) = tokio_tungstenite::connect_async(&url)
+        .await
+        .expect("connect");
     let (mut sink, mut source) = ws.split();
 
     // Ping with bytes::Bytes payload (0.28 API).
@@ -84,8 +86,7 @@ async fn ping_then_eval_round_trip() {
     match resp {
         Message::Text(text) => {
             // .as_str() is the post-migration accessor (0.28 Utf8Bytes).
-            let v: serde_json::Value =
-                serde_json::from_str(text.as_str()).expect("non-JSON text");
+            let v: serde_json::Value = serde_json::from_str(text.as_str()).expect("non-JSON text");
             assert!(v.get("requestId").is_some(), "missing requestId");
         }
         other => panic!("expected Text response, got {other:?}"),
@@ -110,6 +111,7 @@ async fn start_server() -> u16 {
                     store,
                     Duration::from_secs(30),
                     "default",
+                    None,
                 )
                 .await;
             });

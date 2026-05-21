@@ -31,7 +31,7 @@ A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 
 - [Validation Guide](validation) — Full test suite: what each layer validates, how to re-run, CI tiers, benchmark baselines
 - [**Batch Read Error Handling**](batch-read-error-handling) — How `sd2-redis-store` detects and surfaces partial data corruption during batch node/edge reads; fail-fast semantics, observability, and testing contract
 - [**Gremlin Error Handling**](gremlin-error-handling) — Error guarantees across the Gremlin pipeline: parse, compile, and execution errors; no-silent-failure contract; integer overflow protection; type-safe map merging
-- [Authentication (Entra ID)](auth) — Configure JWT auth for the REST API
+- [Authentication](auth) — Configure auth for the REST API (Entra ID JWT), Bolt (password), and Gremlin WebSocket (bearer token)
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [ACR Mirror Workflow](reference/acr-mirror-workflow) — How `ghcr-publish` mirrors every published GHCR tag into `sd2mainend655uvglnfeacr.azurecr.io`
 - [Bolt TLS Deploy Gate](reference/bolt-tls-deploy) — How `deploy.yml` validates TLS certificates before deploying `sedandelivery-bolt`; `BOLT_TLS_CERT_LOOKAHEAD_SECONDS` reference, integer validation guard, and failure semantics
@@ -181,6 +181,12 @@ See [ADR-004](ADR-004-distributed-redis) for the full architecture decision reco
 | `GQL_API_MAX_SCHEMA_SCAN_ELEMENTS` | `1000000` | Max elements loaded into memory for schema-count computation |
 | `GQL_API_JWKS_URL` | — | **Deprecated** — has no effect; authentication now uses `GQL_API_ENTRA_TENANT_ID` / `GQL_API_ENTRA_CLIENT_ID` |
 | `GQL_CSV_IMPORT_DIR` | cwd | Directory for CSV import files; defaults to the process working directory |
+
+### sedandelivery-gremlin-server (Gremlin WebSocket)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GREMLIN_AUTH_TOKEN` | — | Shared secret bearer token. When set, all WebSocket connections must present this token via `Authorization: Bearer <token>` header or first-message `bearer` field. When unset, auth is disabled. See [Authentication](auth#gremlin-websocket-auth) |
 
 ### Query Engine Limits
 

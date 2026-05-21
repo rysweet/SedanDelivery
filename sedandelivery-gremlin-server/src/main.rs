@@ -61,6 +61,17 @@ async fn main() {
     });
     tracing::info!(%bind_addr, "gremlin-server WebSocket server listening");
 
+    let auth_token: Option<Arc<str>> = match std::env::var("GREMLIN_AUTH_TOKEN") {
+        Ok(v) if !v.is_empty() => {
+            tracing::info!("Gremlin WebSocket auth enabled via GREMLIN_AUTH_TOKEN");
+            Some(Arc::from(v.as_str()))
+        }
+        _ => {
+            tracing::info!("GREMLIN_AUTH_TOKEN not set, auth disabled");
+            None
+        }
+    };
+
     let graph = env_or("GREMLIN_SERVER_DEFAULT_GRAPH", "default");
 
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -96,15 +107,21 @@ async fn main() {
         let active = Arc::clone(&active_connections);
         active.fetch_add(1, Ordering::Relaxed);
         let graph = graph.clone();
+        let auth_token = auth_token.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
             let _guard = ConnectionGuard(Arc::clone(&active));
             tracing::debug!(%peer_addr, "new connection");
 
-            if let Err(e) =
-                sedandelivery_gremlin_server::handle_connection(stream, store, idle_timeout, &graph)
-                    .await
+            if let Err(e) = sedandelivery_gremlin_server::handle_connection(
+                stream,
+                store,
+                idle_timeout,
+                &graph,
+                auth_token,
+            )
+            .await
             {
                 tracing::warn!(%peer_addr, "connection error: {e}");
             }

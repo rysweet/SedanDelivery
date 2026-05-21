@@ -238,6 +238,7 @@ Graph Databases. If your SP was created with `Contributor` role on the subscript
 | `GQL_FABRIC_TENANT_ID` | `AZURE_TENANT_ID` secret | `sd2-{env}-sync` (Fabric sync Container App) |
 | `GQL_FABRIC_CLIENT_ID` | `AZURE_CLIENT_ID` secret | `sd2-{env}-sync` (Fabric sync Container App) |
 | `GQL_FABRIC_CLIENT_SECRET` | `secretref:fabric-client-secret` | `sd2-{env}-sync` (Fabric sync Container App) |
+| `GREMLIN_AUTH_TOKEN` | Generated on first deploy or reused from existing `gremlin-auth-token` Container App secret | `sd2-{env}-gremlin` |
 
 The deployed Container App name is `sd2-{env}-sync`. The image and executable
 name remain `sedandelivery-fabric-sync`.

@@ -20,6 +20,9 @@ pub struct RequestMessage {
     pub processor: String,
     #[serde(default)]
     pub args: serde_json::Map<String, serde_json::Value>,
+    /// Optional bearer token for first-message authentication.
+    #[serde(default)]
+    pub bearer: Option<String>,
 }
 
 /// Outgoing Gremlin response message.

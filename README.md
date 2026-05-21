@@ -155,6 +155,8 @@ cargo run -p sedandelivery-gremlin-server
 
 Both servers use the same `GraphStore` backend as the Bolt and REST servers. Results are returned in GraphSON v3 format.
 
+**Authentication**: Set `GREMLIN_AUTH_TOKEN` to enable bearer token auth on `sedandelivery-gremlin-server`. Clients authenticate via `Authorization: Bearer <token>` header or a `bearer` field in the first message. See [docs/auth.md](docs/auth.md#gremlin-websocket-auth) for details.
+
 ## Use it via Redis protocol
 
 Connect with any Redis client. The module exposes these commands:
@@ -338,7 +340,7 @@ Plaintext exposes both to network observers. See
 
 ## Documentation
 
-- [Authentication (Entra ID)](docs/auth.md) — Configure JWT auth for the REST API
+- [Authentication](docs/auth.md) — Configure auth for the REST API (Entra ID JWT), Bolt (password), and Gremlin WebSocket (bearer token)
 - [Neo4j Compatibility Gallery](https://turbo-adventure-3eloook.pages.github.io/neo4j-compat-gallery) — 4 security apps validated against SedanDelivery's Bolt protocol
 - [Tutorial](docs/TUTORIAL.md) — full usage guide with code examples
 - [Embedded Library Usage Guide](docs/EMBEDDED_GUIDE.md) — comprehensive guide for the in-process crates (`sedan-cypher-embedded`, `sedan-gql-embedded`, `sedan-gremlin-embedded`), with runnable examples under each crate's `examples/` directory

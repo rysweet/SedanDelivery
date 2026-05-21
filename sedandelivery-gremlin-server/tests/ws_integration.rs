@@ -12,8 +12,11 @@ use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Start a Gremlin WebSocket server on a random port with an in-memory store.
+///
+/// When `auth_token` is `Some`, the server requires bearer authentication.
+/// When `None`, auth is disabled (backward compatible).
 /// Returns the port it bound to.
-async fn start_test_server() -> u16 {
+async fn start_test_server_with_auth(auth_token: Option<Arc<str>>) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("failed to bind");
@@ -31,12 +34,14 @@ async fn start_test_server() -> u16 {
                 Err(_) => break,
             };
             let store = Arc::clone(&store);
+            let auth_token = auth_token.clone();
             tokio::spawn(async move {
                 let _ = sedandelivery_gremlin_server::handle_connection(
                     stream,
                     store,
                     Duration::from_secs(30),
                     "default",
+                    auth_token,
                 )
                 .await;
             });
@@ -44,6 +49,11 @@ async fn start_test_server() -> u16 {
     });
 
     port
+}
+
+/// Start a Gremlin WebSocket server with auth disabled (backward compatible).
+async fn start_test_server() -> u16 {
+    start_test_server_with_auth(None).await
 }
 
 /// Connect a WebSocket client to the test server.
@@ -161,7 +171,9 @@ async fn eval_missing_gremlin_arg_returns_499() {
         "op": "eval",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string().into())).await.unwrap();
+    sink.send(Message::Text(request.to_string().into()))
+        .await
+        .unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -185,7 +197,9 @@ async fn close_op_returns_204() {
         "op": "close",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string().into())).await.unwrap();
+    sink.send(Message::Text(request.to_string().into()))
+        .await
+        .unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -209,7 +223,9 @@ async fn unsupported_op_returns_500() {
         "op": "bytecode",
         "args": {}
     });
-    sink.send(Message::Text(request.to_string().into())).await.unwrap();
+    sink.send(Message::Text(request.to_string().into()))
+        .await
+        .unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
         .await
@@ -287,7 +303,9 @@ async fn ping_gets_pong() {
     let (ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
     let (mut sink, mut source) = ws.split();
 
-    sink.send(Message::Ping(vec![1, 2, 3].into())).await.unwrap();
+    sink.send(Message::Ping(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
 
     let msg = tokio::time::timeout(Duration::from_secs(5), source.next())
         .await
@@ -309,7 +327,9 @@ async fn multiple_requests_on_same_connection() {
             "op": "eval",
             "args": {"gremlin": "g.V().count()"}
         });
-        sink.send(Message::Text(request.to_string().into())).await.unwrap();
+        sink.send(Message::Text(request.to_string().into()))
+            .await
+            .unwrap();
 
         let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
             .await
@@ -322,4 +342,246 @@ async fn multiple_requests_on_same_connection() {
         };
         assert_eq!(resp["status"]["code"], 200);
     }
+}
+
+// ── Auth integration tests ──────────────────────────────────────────────
+
+/// Connect to the test server with a custom Authorization header.
+///
+/// Uses `http::Request::builder()` via `IntoClientRequest` (re-exported by tungstenite)
+/// to set custom headers on the WebSocket upgrade request.
+async fn connect_with_auth(
+    port: u16,
+    auth_header: Option<&str>,
+) -> Result<
+    (
+        futures_util::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            Message,
+        >,
+        futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let url = format!("ws://127.0.0.1:{port}/gremlin");
+    let mut request = url.into_client_request().expect("valid request");
+    if let Some(value) = auth_header {
+        request
+            .headers_mut()
+            .insert("Authorization", value.parse().expect("valid header value"));
+    }
+
+    let (ws, _) = tokio_tungstenite::connect_async(request).await?;
+    Ok(ws.split())
+}
+
+const TEST_AUTH_TOKEN: &str = "test-gremlin-secret-42";
+
+// ── Test 1: Valid Authorization header → authenticated, queries work ────
+
+#[tokio::test]
+async fn auth_valid_header_allows_queries() {
+    let token: Arc<str> = TEST_AUTH_TOKEN.into();
+    let port = start_test_server_with_auth(Some(token)).await;
+
+    let (mut sink, mut source) =
+        connect_with_auth(port, Some(&format!("Bearer {TEST_AUTH_TOKEN}")))
+            .await
+            .expect("connection with valid auth should succeed");
+
+    let resp = send_eval(&mut sink, &mut source, "g.V().count()").await;
+    assert_eq!(
+        resp["status"]["code"], 200,
+        "query should succeed after valid header auth"
+    );
+}
+
+// ── Test 2: Invalid Authorization header → HTTP 401 rejection ──────────
+
+#[tokio::test]
+async fn auth_invalid_header_rejected_with_401() {
+    let token: Arc<str> = TEST_AUTH_TOKEN.into();
+    let port = start_test_server_with_auth(Some(token)).await;
+
+    // Connect with wrong token in Authorization header
+    let result = connect_with_auth(port, Some("Bearer wrong-token-here")).await;
+
+    // The server should reject the upgrade with HTTP 401.
+    // tokio-tungstenite surfaces this as a connection error.
+    assert!(
+        result.is_err(),
+        "connection with invalid auth header should be rejected"
+    );
+
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("401"),
+        "error should mention 401 status, got: {err_str}"
+    );
+}
+
+// ── Test 3: No header → first-message bearer auth succeeds ─────────────
+
+#[tokio::test]
+async fn auth_first_message_bearer_allows_queries() {
+    let token: Arc<str> = TEST_AUTH_TOKEN.into();
+    let port = start_test_server_with_auth(Some(token)).await;
+
+    // Connect WITHOUT Authorization header (defers to first-message auth)
+    let (mut sink, mut source) = connect_with_auth(port, None)
+        .await
+        .expect("upgrade without header should succeed for first-message auth");
+
+    // Send first message with bearer field
+    let request = serde_json::json!({
+        "requestId": "00000000-0000-0000-0000-000000000001",
+        "op": "eval",
+        "args": {
+            "gremlin": "g.V().count()"
+        },
+        "bearer": TEST_AUTH_TOKEN
+    });
+    sink.send(Message::Text(request.to_string().into()))
+        .await
+        .expect("send failed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
+        .await
+        .expect("response timed out")
+        .expect("stream ended")
+        .expect("ws error");
+
+    let resp: serde_json::Value = match msg {
+        Message::Text(t) => serde_json::from_str(t.as_str()).expect("invalid JSON"),
+        other => panic!("expected text response, got {other:?}"),
+    };
+
+    assert_eq!(
+        resp["status"]["code"], 200,
+        "query should succeed after first-message bearer auth"
+    );
+}
+
+// ── Test 4: Auth required but no token provided → 401 error + close ────
+
+#[tokio::test]
+async fn auth_missing_when_required_returns_401() {
+    let token: Arc<str> = TEST_AUTH_TOKEN.into();
+    let port = start_test_server_with_auth(Some(token)).await;
+
+    // Connect WITHOUT Authorization header
+    let (mut sink, mut source) = connect_with_auth(port, None)
+        .await
+        .expect("upgrade without header should succeed");
+
+    // Send first message WITHOUT bearer field
+    let request = serde_json::json!({
+        "requestId": "00000000-0000-0000-0000-000000000001",
+        "op": "eval",
+        "args": {
+            "gremlin": "g.V().count()"
+        }
+    });
+    sink.send(Message::Text(request.to_string().into()))
+        .await
+        .expect("send failed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
+        .await
+        .expect("response timed out")
+        .expect("stream ended")
+        .expect("ws error");
+
+    let resp: serde_json::Value = match msg {
+        Message::Text(t) => serde_json::from_str(t.as_str()).expect("invalid JSON"),
+        other => panic!("expected text response, got {other:?}"),
+    };
+
+    assert_eq!(
+        resp["status"]["code"], 401,
+        "should return 401 when auth required but no bearer provided"
+    );
+
+    // After auth failure, server should close the connection
+    let next = tokio::time::timeout(Duration::from_secs(5), source.next()).await;
+    match next {
+        Ok(Some(Ok(Message::Close(_)))) | Ok(None) | Err(_) => {
+            // Expected: close frame, stream end, or timeout (server closed)
+        }
+        Ok(Some(Ok(other))) => {
+            panic!("expected connection close after auth failure, got: {other:?}")
+        }
+        Ok(Some(Err(_))) => {
+            // Connection error also acceptable (server dropped)
+        }
+    }
+}
+
+// ── Test 5: Auth disabled (no token configured) → queries work without auth ─
+
+#[tokio::test]
+async fn auth_disabled_allows_queries_without_token() {
+    // Start server with auth disabled (None token) — backward compatible
+    let port = start_test_server_with_auth(None).await;
+
+    let (mut sink, mut source) = connect_with_auth(port, None)
+        .await
+        .expect("connection should succeed when auth disabled");
+
+    let resp = send_eval(&mut sink, &mut source, "g.V().count()").await;
+    assert_eq!(
+        resp["status"]["code"], 200,
+        "queries should work without auth when token not configured"
+    );
+}
+
+// ── Test 6: Invalid first-message bearer → 401 + close ─────────────────
+
+#[tokio::test]
+async fn auth_invalid_first_message_bearer_returns_401() {
+    let token: Arc<str> = TEST_AUTH_TOKEN.into();
+    let port = start_test_server_with_auth(Some(token)).await;
+
+    // Connect without Authorization header
+    let (mut sink, mut source) = connect_with_auth(port, None)
+        .await
+        .expect("upgrade without header should succeed");
+
+    // Send first message with WRONG bearer token
+    let request = serde_json::json!({
+        "requestId": "00000000-0000-0000-0000-000000000001",
+        "op": "eval",
+        "args": {
+            "gremlin": "g.V().count()"
+        },
+        "bearer": "wrong-token-entirely"
+    });
+    sink.send(Message::Text(request.to_string().into()))
+        .await
+        .expect("send failed");
+
+    let msg = tokio::time::timeout(Duration::from_secs(10), source.next())
+        .await
+        .expect("response timed out")
+        .expect("stream ended")
+        .expect("ws error");
+
+    let resp: serde_json::Value = match msg {
+        Message::Text(t) => serde_json::from_str(t.as_str()).expect("invalid JSON"),
+        other => panic!("expected text response, got {other:?}"),
+    };
+
+    assert_eq!(
+        resp["status"]["code"], 401,
+        "should return 401 for invalid bearer in first message"
+    );
 }

@@ -114,7 +114,9 @@ async fn send_and_receive(
 ) -> serde_json::Value {
     use futures_util::{SinkExt, StreamExt};
 
-    ws.send(Message::Text(msg.to_string().into())).await.unwrap();
+    ws.send(Message::Text(msg.to_string().into()))
+        .await
+        .unwrap();
 
     let response = ws.next().await.expect("no response").expect("ws error");
     match response {
