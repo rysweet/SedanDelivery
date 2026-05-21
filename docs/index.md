@@ -29,6 +29,7 @@ A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 
 - [Tutorial](TUTORIAL) — Getting started with SedanDelivery
 - [Fabric Graph Tutorial](FABRIC_TUTORIAL) — Deploy, inspect `sd2-{env}-sync`, reuse `GQL_FABRIC_ENDPOINT`, query Fabric, and monitor replication
 - [Validation Guide](validation) — Full test suite: what each layer validates, how to re-run, CI tiers, benchmark baselines
+- [**Gremlin GraphSON Property Serialization**](gremlin-graphson-properties) — How vertex/edge properties are resolved from the store and serialized in GraphSON v3 output; fallback behavior; property conversion reference
 - [**Batch Read Error Handling**](batch-read-error-handling) — How `sd2-redis-store` detects and surfaces partial data corruption during batch node/edge reads; fail-fast semantics, observability, and testing contract
 - [**Gremlin Error Handling**](gremlin-error-handling) — Error guarantees across the Gremlin pipeline: parse, compile, and execution errors; no-silent-failure contract; integer overflow protection; type-safe map merging
 - [Authentication](auth) — Configure auth for the REST API (Entra ID JWT), Bolt (password), and Gremlin WebSocket (bearer token)
