@@ -81,12 +81,23 @@ impl RedisGraphStore {
                 .arg("props");
         }
         let raw: Vec<Vec<Option<String>>> = pipe.query(conn).map_err(backend_storage_error)?;
+        Self::decode_node_batch_results(graph, ids, raw)
+    }
+
+    /// Pure decoder: convert the raw HMGET(labels, props) responses for a
+    /// batch of nodes into [`NodeData`] values. Returns `None` for any node
+    /// whose hash was entirely absent.
+    pub(crate) fn decode_node_batch_results(
+        graph: &str,
+        ids: &[NodeId],
+        raw: Vec<Vec<Option<String>>>,
+    ) -> Result<Vec<Option<NodeData>>, StorageError> {
         let mut results = Vec::with_capacity(ids.len());
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
             match (
-                &fields.first().and_then(|field| field.as_ref()),
-                &fields.get(1).and_then(|field| field.as_ref()),
+                fields.first().and_then(|f| f.as_ref()),
+                fields.get(1).and_then(|f| f.as_ref()),
             ) {
                 (None, None) => results.push(None),
                 (Some(labels_json), Some(props_json)) => {
@@ -106,12 +117,17 @@ impl RedisGraphStore {
                     tracing::error!(
                         node_id = id.0,
                         graph = graph,
-                        labels = ?fields.first().and_then(|field| field.as_ref()),
-                        props = ?fields.get(1).and_then(|field| field.as_ref()),
-                        "partial node data detected during batch read — treating entry as missing node to preserve sparse batch semantics"
+                        labels = ?fields.first().and_then(|f| f.as_ref()),
+                        props = ?fields.get(1).and_then(|f| f.as_ref()),
+                        "partial node data detected during batch read"
                     );
                     record_backend_error();
-                    results.push(None);
+                    return Err(StorageError::Backend {
+                        msg: format!(
+                            "corrupted node data: node {} in graph '{}' has partial fields",
+                            id.0, graph
+                        ),
+                    });
                 }
             }
         }
@@ -432,5 +448,133 @@ mod tests {
         let store = store_for_tests();
         let err = store.read_edge(&mut conn, "g", 9).unwrap_err();
         assert!(matches!(err, StorageError::Backend { .. }));
+    }
+
+    // ── decode_node_batch_results tests ──────────────────────────────────
+    //
+    // These exercise the pure decoder extracted from read_nodes_batch.
+    // Tests for partial data error propagation will FAIL until #1200 is
+    // fixed (currently returns Ok(None) instead of Err).
+
+    #[test]
+    fn decode_node_batch_all_nil_returns_none() {
+        let ids = vec![NodeId(1)];
+        let raw = vec![vec![None, None]];
+        let out = RedisGraphStore::decode_node_batch_results("g", &ids, raw).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_none(), "all-nil should map to None (absent node)");
+    }
+
+    #[test]
+    fn decode_node_batch_valid_node_decodes_correctly() {
+        let ids = vec![NodeId(42)];
+        let raw = vec![vec![
+            Some(r#"["Person","Employee"]"#.to_string()),
+            Some(r#"{"name":"Alice"}"#.to_string()),
+        ]];
+        let out = RedisGraphStore::decode_node_batch_results("g", &ids, raw).unwrap();
+        let node = out[0].as_ref().unwrap();
+        assert_eq!(node.id, NodeId(42));
+        assert_eq!(node.labels, vec!["Person", "Employee"]);
+        assert!(node.properties.contains_key("name"));
+    }
+
+    #[test]
+    fn decode_node_batch_empty_input_returns_empty() {
+        let out = RedisGraphStore::decode_node_batch_results("g", &[], vec![]).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn decode_node_batch_multi_node_preserves_order() {
+        let ids = vec![NodeId(1), NodeId(2), NodeId(3)];
+        let raw = vec![
+            vec![Some(r#"["A"]"#.to_string()), Some(r#"{}"#.to_string())],
+            vec![None, None], // absent
+            vec![Some(r#"["C"]"#.to_string()), Some(r#"{}"#.to_string())],
+        ];
+        let out = RedisGraphStore::decode_node_batch_results("g", &ids, raw).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].as_ref().unwrap().id, NodeId(1));
+        assert!(out[1].is_none());
+        assert_eq!(out[2].as_ref().unwrap().id, NodeId(3));
+    }
+
+    #[test]
+    fn decode_node_batch_bad_labels_json_gives_serialization_error() {
+        let ids = vec![NodeId(1)];
+        let raw = vec![vec![
+            Some("not-json".to_string()),
+            Some(r#"{}"#.to_string()),
+        ]];
+        let err = RedisGraphStore::decode_node_batch_results("g", &ids, raw).unwrap_err();
+        assert!(matches!(err, StorageError::Serialization { .. }));
+    }
+
+    #[test]
+    fn decode_node_batch_bad_props_json_gives_serialization_error() {
+        let ids = vec![NodeId(1)];
+        let raw = vec![vec![
+            Some(r#"["Person"]"#.to_string()),
+            Some("{{bad".to_string()),
+        ]];
+        let err = RedisGraphStore::decode_node_batch_results("g", &ids, raw).unwrap_err();
+        assert!(matches!(err, StorageError::Serialization { .. }));
+    }
+
+    // ── #1200: These tests define the DESIRED behavior ──────────────────
+    // They will FAIL until the fix is applied: partial data must return
+    // Err(StorageError::Backend) instead of silently returning Ok(None).
+
+    #[test]
+    fn decode_node_batch_partial_labels_only_returns_error() {
+        // labels present but props missing → partial corruption
+        let ids = vec![NodeId(5)];
+        let raw = vec![vec![Some(r#"["Person"]"#.to_string()), None]];
+        let result = RedisGraphStore::decode_node_batch_results("g", &ids, raw);
+        assert!(
+            result.is_err(),
+            "partial node data (labels only) must return Err, got Ok({:?})",
+            result.unwrap()
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, StorageError::Backend { .. }),
+            "expected StorageError::Backend, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_node_batch_partial_props_only_returns_error() {
+        // props present but labels missing → partial corruption
+        let ids = vec![NodeId(6)];
+        let raw = vec![vec![None, Some(r#"{"age": 30}"#.to_string())]];
+        let result = RedisGraphStore::decode_node_batch_results("g", &ids, raw);
+        assert!(
+            result.is_err(),
+            "partial node data (props only) must return Err, got Ok({:?})",
+            result.unwrap()
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, StorageError::Backend { .. }),
+            "expected StorageError::Backend, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_node_batch_partial_data_among_valid_fails_fast() {
+        // First node is valid, second has partial data → should error on second
+        let ids = vec![NodeId(1), NodeId(2)];
+        let raw = vec![
+            vec![Some(r#"["OK"]"#.to_string()), Some(r#"{}"#.to_string())],
+            vec![Some(r#"["Corrupt"]"#.to_string()), None], // partial
+        ];
+        let result = RedisGraphStore::decode_node_batch_results("g", &ids, raw);
+        assert!(
+            result.is_err(),
+            "batch with partial data must fail, got Ok({:?})",
+            result.unwrap()
+        );
     }
 }

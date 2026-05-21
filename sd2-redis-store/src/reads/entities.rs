@@ -4,6 +4,7 @@ use cypher_core::error::StorageError;
 use cypher_core::serde_value::json_to_props;
 use cypher_core::storage::{EdgeData, EdgeId, NodeData, NodeId};
 
+use crate::error_metrics::record_backend_error;
 use crate::keys::key_edge;
 use crate::RedisGraphStore;
 
@@ -73,10 +74,16 @@ impl RedisGraphStore {
         let mut results = Vec::with_capacity(ids.len());
         for (idx, fields) in raw.into_iter().enumerate() {
             let id = ids[idx];
-            if fields.len() >= 4 {
-                if let (Some(src_s), Some(dst_s), Some(rel_type), Some(props_json)) =
-                    (&fields[0], &fields[1], &fields[2], &fields[3])
-                {
+            if fields.len() < 4 {
+                // Short field vec (e.g. key missing entirely) → absent edge
+                results.push(None);
+                continue;
+            }
+            match (&fields[0], &fields[1], &fields[2], &fields[3]) {
+                (None, None, None, None) => {
+                    results.push(None);
+                }
+                (Some(src_s), Some(dst_s), Some(rel_type), Some(props_json)) => {
                     let src =
                         NodeId(
                             src_s
@@ -101,10 +108,14 @@ impl RedisGraphStore {
                         dst,
                         properties,
                     }));
-                    continue;
+                }
+                _ => {
+                    record_backend_error();
+                    return Err(StorageError::Backend {
+                        msg: format!("corrupted edge data: edge {} has partial fields", id.0),
+                    });
                 }
             }
-            results.push(None);
         }
         Ok(results)
     }
@@ -209,5 +220,81 @@ mod decode_tests {
         assert_eq!(out[1].as_ref().unwrap().rel_type, "B");
         assert_eq!(out[0].as_ref().unwrap().id, EdgeId(10));
         assert_eq!(out[1].as_ref().unwrap().id, EdgeId(20));
+    }
+
+    #[test]
+    fn decode_edge_batch_all_nil_returns_none() {
+        let ids = vec![EdgeId(1)];
+        let raw = vec![vec![None, None, None, None]];
+        let out = RedisGraphStore::decode_edge_batch_results(&ids, raw).unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].is_none(), "all-nil edge should map to None (absent)");
+    }
+
+    // ── #1200: These tests define the DESIRED behavior ──────────────────
+    // They will FAIL until the fix is applied: partial edge data must
+    // return Err(StorageError::Backend) instead of silently returning
+    // Ok(None).
+
+    #[test]
+    fn decode_edge_batch_partial_src_only_returns_error() {
+        // src present, but dst/rel_type/props all nil → partial corruption
+        let ids = vec![EdgeId(9)];
+        let raw = vec![vec![Some("1".into()), None, None, None]];
+        let result = RedisGraphStore::decode_edge_batch_results(&ids, raw);
+        assert!(
+            result.is_err(),
+            "partial edge data (src only) must return Err, got Ok({:?})",
+            result.unwrap()
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, StorageError::Backend { .. }),
+            "expected StorageError::Backend, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_edge_batch_partial_missing_props_returns_error() {
+        // src/dst/rel_type present but props nil → partial corruption
+        let ids = vec![EdgeId(8)];
+        let raw = vec![vec![
+            Some("1".into()),
+            Some("2".into()),
+            Some("KNOWS".into()),
+            None,
+        ]];
+        let result = RedisGraphStore::decode_edge_batch_results(&ids, raw);
+        assert!(
+            result.is_err(),
+            "partial edge data (missing props) must return Err, got Ok({:?})",
+            result.unwrap()
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, StorageError::Backend { .. }),
+            "expected StorageError::Backend, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_edge_batch_partial_among_valid_fails_fast() {
+        // First edge valid, second has partial data → should error
+        let ids = vec![EdgeId(1), EdgeId(2)];
+        let raw = vec![
+            vec![
+                Some("1".into()),
+                Some("2".into()),
+                Some("KNOWS".into()),
+                Some("{}".into()),
+            ],
+            vec![Some("3".into()), None, Some("LIKES".into()), None], // partial
+        ];
+        let result = RedisGraphStore::decode_edge_batch_results(&ids, raw);
+        assert!(
+            result.is_err(),
+            "batch with partial edge data must fail, got Ok({:?})",
+            result.unwrap()
+        );
     }
 }

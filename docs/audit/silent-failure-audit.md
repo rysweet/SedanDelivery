@@ -50,9 +50,13 @@ Every site is one of:
 | `sd2-api/src/main.rs:263` | infra-bind | `0.0.0.0:3001` bind default |
 | `sd2-api/src/metrics.rs:97` | logged-fallback | Prometheus response builder fallback |
 
-**Total surveyed:** 29 sites (initial pass) + 6 Gremlin-engine sites (follow-up)
-**Real bugs found:** 7 total
-- 1 in `sd2-redis-store` (fixed in #1276 + locked down in #1279)
+| `sd2-redis-store/src/entity_reads.rs` (batch) | **silent-bug → to be fixed in #1200** | node batch read silently returns `None` for partial data |
+| `sd2-redis-store/src/reads/entities.rs` (batch) | **silent-bug → to be fixed in #1200** | edge batch read silently returns `None` for partial data |
+
+**Total surveyed:** 29 sites (initial pass) + 6 Gremlin-engine sites (follow-up) + 2 batch-read sites
+**Real bugs found:** 9 total
+- 1 in `sd2-redis-store` label+property scan (fixed in #1276 + locked down in #1279)
+- 2 in `sd2-redis-store` batch reads (to be fixed in #1200; see [Batch Read Error Handling](../batch-read-error-handling.md))
 - 6 in Gremlin pipeline (fixed in #1192–#1206; see [Gremlin Error Handling](../gremlin-error-handling.md))
 **Defensive-but-wrong patterns:** 2 (fixed in this PR)
 **Acceptable:** 26
