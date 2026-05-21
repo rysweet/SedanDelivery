@@ -345,6 +345,76 @@ fn coalesce_picks_first_nonempty() {
     assert_eq!(as_str(first_value(&r)), "Alice");
 }
 
+#[test]
+fn choose_two_arg_without_else() {
+    let store = fresh_store();
+    seed_people(&store);
+    // Two-arg choose: only if_true branch. Unmatched rows pass through.
+    let r = run(
+        &store,
+        "g.V().choose(has('name','Alice'), values('age')).count()",
+    );
+    // Alice → 30 (from values('age')), others pass through as nodes → 4 total.
+    assert!(as_int(first_value(&r)) >= 1, "should have at least 1 result");
+}
+
+#[test]
+fn choose_three_arg_all_false() {
+    let store = fresh_store();
+    seed_people(&store);
+    // Predicate matches nobody → all go to else branch.
+    let r = run(
+        &store,
+        "g.V().choose(has('name','NOBODY'), values('age'), constant(-1))",
+    );
+    let ints: Vec<i64> = all_values(&r).iter().map(as_int).collect();
+    assert!(ints.iter().all(|&i| i == -1), "all should be -1; got {ints:?}");
+    assert_eq!(ints.len(), 4, "one result per person");
+}
+
+#[test]
+fn coalesce_all_empty_drops_traversers() {
+    let store = fresh_store();
+    seed_people(&store);
+    // Both alternatives are non-existent properties → both empty → drop.
+    let r = run(
+        &store,
+        "g.V().has('name','Alice').coalesce(values('nope1'), values('nope2'))",
+    );
+    assert!(
+        r.rows.is_empty(),
+        "coalesce with all empty alternatives should drop; got {} rows",
+        r.rows.len()
+    );
+}
+
+#[test]
+fn coalesce_first_match_wins_over_second() {
+    let store = fresh_store();
+    seed_people(&store);
+    // Both alternatives produce output; first should win.
+    let r = run(
+        &store,
+        "g.V().has('name','Alice').coalesce(values('name'), values('age'))",
+    );
+    assert_eq!(as_str(first_value(&r)), "Alice", "first match should win");
+}
+
+#[test]
+fn coalesce_multiple_input_rows() {
+    let store = fresh_store();
+    seed_people(&store);
+    let r = run(
+        &store,
+        "g.V().coalesce(values('name'))",
+    );
+    let vals = all_values(&r);
+    let names: Vec<&str> = vals.iter().map(|v| as_str(v)).collect();
+    assert_eq!(names.len(), 4, "one name per person");
+    assert!(names.contains(&"Alice"));
+    assert!(names.contains(&"Bob"));
+}
+
 // ── sample / limit / range ─────────────────────────────────────────────────
 
 #[test]

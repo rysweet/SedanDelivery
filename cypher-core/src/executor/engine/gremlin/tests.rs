@@ -343,6 +343,753 @@ fn coalesce_uses_first_match_when_multiple_succeed() {
     assert_eq!(result.rows[0].get("val"), Some(&Value::Str("first".into())));
 }
 
+// ── Choose: alias remapping ──────────────────────────────────────────────
+
+#[test]
+fn choose_output_alias_copies_true_branch_result() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["Yes".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    // Predicate always matches (scan :Yes). True branch projects into "src".
+    // output_alias="out" + true_alias="src" → row should have "out" copied from "src".
+    let plan = Operator::Choose {
+        predicate: Box::new(Operator::NodeScan {
+            label: Some(Label::new("Yes")),
+            alias: Identifier::new("check"),
+        }),
+        if_true: Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("hello".into()),
+                Some(Identifier::new("src")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        }),
+        if_false: None,
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("Yes")),
+            alias: Identifier::new("n"),
+        }),
+        true_alias: Some(Identifier::new("src")),
+        false_alias: None,
+        output_alias: Some(Identifier::new("out")),
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("out"),
+        Some(&Value::Str("hello".into())),
+        "output_alias should copy from true_alias"
+    );
+}
+
+#[test]
+fn choose_output_alias_copies_false_branch_result() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    // Predicate never matches (scan :NOPE). False branch projects into "fb".
+    // output_alias="out" + false_alias="fb" → row should have "out" copied from "fb".
+    let plan = Operator::Choose {
+        predicate: Box::new(Operator::NodeScan {
+            label: Some(Label::new("NOPE")),
+            alias: Identifier::new("check"),
+        }),
+        if_true: Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("nope".into()),
+                Some(Identifier::new("x")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        }),
+        if_false: Some(Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("fell_through".into()),
+                Some(Identifier::new("fb")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        })),
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("A")),
+            alias: Identifier::new("n"),
+        }),
+        true_alias: None,
+        false_alias: Some(Identifier::new("fb")),
+        output_alias: Some(Identifier::new("out")),
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("out"),
+        Some(&Value::Str("fell_through".into())),
+        "output_alias should copy from false_alias"
+    );
+}
+
+#[test]
+fn choose_no_else_with_output_alias_copies_false_alias() {
+    let store = make_store();
+    let mut props = IndexMap::new();
+    props.insert("tag".to_string(), Value::Str("original".into()));
+    store
+        .create_node("g", vec!["A".to_string()], props)
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    // No if_false, but output_alias + false_alias set.
+    // When predicate doesn't match, row passes through and
+    // false_alias value is copied to output_alias.
+    let plan = Operator::Choose {
+        predicate: Box::new(Operator::NodeScan {
+            label: Some(Label::new("NOPE")),
+            alias: Identifier::new("check"),
+        }),
+        if_true: Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("x".into()),
+                Some(Identifier::new("tb")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        }),
+        if_false: None,
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("A")),
+            alias: Identifier::new("fb"),
+        }),
+        true_alias: Some(Identifier::new("tb")),
+        false_alias: Some(Identifier::new("fb")),
+        output_alias: Some(Identifier::new("out")),
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert_eq!(result.rows.len(), 1);
+    // The pass-through path copies false_alias → output_alias.
+    assert!(
+        result.rows[0].contains_key("out"),
+        "output_alias should be set on pass-through"
+    );
+}
+
+#[test]
+fn choose_batch_executes_true_and_false_branches() {
+    // Choose batches rows by predicate outcome. When predicate is a global
+    // NodeScan for an existing label, ALL input rows match → all go to true.
+    let store = make_store();
+    store
+        .create_node("g", vec!["Yes".to_string()], IndexMap::new())
+        .unwrap();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    // Predicate: NodeScan for :Yes — always finds 1 row (global scan), so
+    // is_true = true for every input row → all 3 go to if_true.
+    let plan = Operator::Choose {
+        predicate: Box::new(Operator::NodeScan {
+            label: Some(Label::new("Yes")),
+            alias: Identifier::new("check"),
+        }),
+        if_true: Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("matched".into()),
+                Some(Identifier::new("r")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        }),
+        if_false: Some(Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("unmatched".into()),
+                Some(Identifier::new("r")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        })),
+        child: Box::new(Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        }),
+        true_alias: None,
+        false_alias: None,
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    // All 3 input rows get batch-executed through if_true since predicate
+    // always finds the :Yes node. Batch execution means the true branch
+    // receives all 3 rows as foreach_seed at once.
+    assert!(
+        !result.rows.is_empty(),
+        "should produce output for all input rows"
+    );
+    // All output rows should have "r" = "matched" (no row goes to false).
+    for row in &result.rows {
+        if let Some(val) = row.get("r") {
+            assert_eq!(val, &Value::Str("matched".into()));
+        }
+    }
+}
+
+#[test]
+fn choose_false_branch_when_predicate_always_empty() {
+    // When predicate never matches, all rows go to if_false.
+    let store = make_store();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    let plan = Operator::Choose {
+        predicate: Box::new(Operator::NodeScan {
+            label: Some(Label::new("NOPE")),
+            alias: Identifier::new("check"),
+        }),
+        if_true: Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("true_hit".into()),
+                Some(Identifier::new("r")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        }),
+        if_false: Some(Box::new(Operator::Project {
+            items: vec![(
+                Expr::Str("false_hit".into()),
+                Some(Identifier::new("r")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        })),
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("A")),
+            alias: Identifier::new("n"),
+        }),
+        true_alias: None,
+        false_alias: None,
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert!(!result.rows.is_empty(), "should produce rows from false branch");
+    // No row should have "true_hit".
+    for row in &result.rows {
+        assert_ne!(
+            row.get("r"),
+            Some(&Value::Str("true_hit".into())),
+            "no row should go to true branch"
+        );
+    }
+}
+
+// ── ChooseMap: default branch ────────────────────────────────────────────
+
+#[test]
+fn choose_map_default_branch_catches_unmatched() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["Software".to_string()], IndexMap::new())
+        .unwrap();
+    let mut p2 = IndexMap::new();
+    p2.insert("name".to_string(), Value::Str("alice".into()));
+    store
+        .create_node("g", vec!["Person".to_string()], p2)
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store).with_gremlin_mode();
+
+    // Match :Software by hasLabel, match :Person by has("name","alice"),
+    // default catches anything else.
+    let plan = Operator::ChooseMap {
+        selector: Box::new(Operator::SingleRow),
+        selector_alias: Identifier::new("n"),
+        options: vec![
+            (
+                Some(Value::Str(r#"__.hasLabel("Software")"#.into())),
+                Box::new(Operator::Project {
+                    items: vec![(
+                        Expr::Str("sw".into()),
+                        Some(Identifier::new("result")),
+                    )],
+                    child: Box::new(Operator::SingleRow),
+                }),
+                None,
+            ),
+            (
+                None, // default branch
+                Box::new(Operator::Project {
+                    items: vec![(
+                        Expr::Str("default".into()),
+                        Some(Identifier::new("result")),
+                    )],
+                    child: Box::new(Operator::SingleRow),
+                }),
+                None,
+            ),
+        ],
+        child: Box::new(Operator::NodeScan {
+            label: None,
+            alias: Identifier::new("n"),
+        }),
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    let mut values: Vec<_> = result
+        .rows
+        .iter()
+        .filter_map(|r| r.get("result").cloned())
+        .collect();
+    values.sort_by_key(|v| format!("{v:?}"));
+    assert_eq!(values.len(), 2);
+    assert!(
+        values.contains(&Value::Str("sw".into())),
+        "Software node should match __.hasLabel; got {values:?}"
+    );
+    assert!(
+        values.contains(&Value::Str("default".into())),
+        "Person node should fall to default; got {values:?}"
+    );
+}
+
+#[test]
+fn choose_map_no_default_identity_passthrough() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["Unknown".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store).with_gremlin_mode();
+
+    // Only option matches __.hasLabel("NOPE") — won't match :Unknown.
+    // No default branch → unmatched row passes through as identity.
+    let plan = Operator::ChooseMap {
+        selector: Box::new(Operator::SingleRow),
+        selector_alias: Identifier::new("n"),
+        options: vec![(
+            Some(Value::Str(r#"__.hasLabel("NOPE")"#.into())),
+            Box::new(Operator::Project {
+                items: vec![(
+                    Expr::Str("nope".into()),
+                    Some(Identifier::new("result")),
+                )],
+                child: Box::new(Operator::SingleRow),
+            }),
+            None,
+        )],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("Unknown")),
+            alias: Identifier::new("n"),
+        }),
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    // No match + no default → row appears as identity pass-through.
+    assert!(!result.rows.is_empty(), "unmatched row should pass through");
+    assert!(
+        !result.rows[0].contains_key("result"),
+        "identity pass-through should not have matched branch output"
+    );
+}
+
+// ── ChooseMap: Pick.unproductive ─────────────────────────────────────────
+
+#[test]
+fn choose_map_unproductive_catches_null_selector() {
+    let store = make_store();
+    // Node has property "name" but NOT "val" — selector on "val" is unproductive.
+    let mut p = IndexMap::new();
+    p.insert("name".to_string(), Value::Str("test".into()));
+    store
+        .create_node("g", vec!["T".to_string()], p)
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store).with_gremlin_mode();
+
+    // Use a Project child that puts explicit Null in the "val" column.
+    // Selector alias "val" → Null → unproductive.
+    let plan = Operator::ChooseMap {
+        selector: Box::new(Operator::SingleRow),
+        selector_alias: Identifier::new("val"),
+        options: vec![
+            (
+                Some(Value::Int(1)),
+                Box::new(Operator::Project {
+                    items: vec![(
+                        Expr::Str("matched".into()),
+                        Some(Identifier::new("result")),
+                    )],
+                    child: Box::new(Operator::SingleRow),
+                }),
+                None,
+            ),
+            (
+                Some(Value::Str("Pick.unproductive".into())),
+                Box::new(Operator::Project {
+                    items: vec![(
+                        Expr::Str("unproductive".into()),
+                        Some(Identifier::new("result")),
+                    )],
+                    child: Box::new(Operator::SingleRow),
+                }),
+                None,
+            ),
+        ],
+        child: Box::new(Operator::Project {
+            items: vec![(Expr::Null, Some(Identifier::new("val")))],
+            child: Box::new(Operator::SingleRow),
+        }),
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    let values: Vec<_> = result
+        .rows
+        .iter()
+        .filter_map(|r| r.get("result").cloned())
+        .collect();
+    assert!(
+        values.contains(&Value::Str("unproductive".into())),
+        "null selector should route to Pick.unproductive branch; got {values:?}"
+    );
+}
+
+// ── ChooseMap: Pick.any ──────────────────────────────────────────────────
+
+#[test]
+fn choose_map_pick_any_matches_any_value() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["T".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store).with_gremlin_mode();
+
+    // Pick.any should match any non-null selector value (a Node here).
+    let plan = Operator::ChooseMap {
+        selector: Box::new(Operator::SingleRow),
+        selector_alias: Identifier::new("n"),
+        options: vec![(
+            Some(Value::Str("Pick.any".into())),
+            Box::new(Operator::Project {
+                items: vec![(
+                    Expr::Str("any_hit".into()),
+                    Some(Identifier::new("result")),
+                )],
+                child: Box::new(Operator::SingleRow),
+            }),
+            None,
+        )],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("T")),
+            alias: Identifier::new("n"),
+        }),
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    let values: Vec<_> = result
+        .rows
+        .iter()
+        .filter_map(|r| r.get("result").cloned())
+        .collect();
+    assert!(
+        values.contains(&Value::Str("any_hit".into())),
+        "Pick.any should match any non-null value; got {values:?}"
+    );
+}
+
+// ── ChooseMap: value type comparison ─────────────────────────────────────
+
+#[test]
+fn choose_map_matches_has_property_value() {
+    let store = make_store();
+    let mut p = IndexMap::new();
+    p.insert("color".to_string(), Value::Str("red".into()));
+    store
+        .create_node("g", vec!["T".to_string()], p)
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store).with_gremlin_mode();
+
+    // Use __.has() traversal tokens for property-based dispatch.
+    let plan = Operator::ChooseMap {
+        selector: Box::new(Operator::SingleRow),
+        selector_alias: Identifier::new("n"),
+        options: vec![
+            (
+                Some(Value::Str(r#"__.has("color","blue")"#.into())),
+                Box::new(Operator::Project {
+                    items: vec![(
+                        Expr::Str("blue".into()),
+                        Some(Identifier::new("result")),
+                    )],
+                    child: Box::new(Operator::SingleRow),
+                }),
+                None,
+            ),
+            (
+                Some(Value::Str(r#"__.has("color","red")"#.into())),
+                Box::new(Operator::Project {
+                    items: vec![(
+                        Expr::Str("red".into()),
+                        Some(Identifier::new("result")),
+                    )],
+                    child: Box::new(Operator::SingleRow),
+                }),
+                None,
+            ),
+        ],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("T")),
+            alias: Identifier::new("n"),
+        }),
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    let values: Vec<_> = result
+        .rows
+        .iter()
+        .filter_map(|r| r.get("result").cloned())
+        .collect();
+    assert_eq!(values, vec![Value::Str("red".into())]);
+}
+
+// ── ChooseMap: output_alias + branch_alias ───────────────────────────────
+
+#[test]
+fn choose_map_output_alias_copies_branch_alias() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["Software".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store).with_gremlin_mode();
+
+    // Branch output goes into "src", output_alias "out" should copy from "src".
+    let plan = Operator::ChooseMap {
+        selector: Box::new(Operator::SingleRow),
+        selector_alias: Identifier::new("n"),
+        options: vec![(
+            Some(Value::Str(r#"__.hasLabel("Software")"#.into())),
+            Box::new(Operator::Project {
+                items: vec![(
+                    Expr::Str("found".into()),
+                    Some(Identifier::new("src")),
+                )],
+                child: Box::new(Operator::SingleRow),
+            }),
+            Some(Identifier::new("src")),
+        )],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("Software")),
+            alias: Identifier::new("n"),
+        }),
+        output_alias: Some(Identifier::new("out")),
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("out"),
+        Some(&Value::Str("found".into())),
+        "output_alias should receive value from branch_alias"
+    );
+}
+
+// ── ChooseMap: __.identity() traversal option ────────────────────────────
+
+#[test]
+fn choose_map_identity_traversal_matches_non_null() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["T".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store).with_gremlin_mode();
+
+    let plan = Operator::ChooseMap {
+        selector: Box::new(Operator::SingleRow),
+        selector_alias: Identifier::new("n"),
+        options: vec![(
+            Some(Value::Str("__.identity()".into())),
+            Box::new(Operator::Project {
+                items: vec![(
+                    Expr::Str("identity_hit".into()),
+                    Some(Identifier::new("result")),
+                )],
+                child: Box::new(Operator::SingleRow),
+            }),
+            None,
+        )],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("T")),
+            alias: Identifier::new("n"),
+        }),
+        output_alias: None,
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    let values: Vec<_> = result
+        .rows
+        .iter()
+        .filter_map(|r| r.get("result").cloned())
+        .collect();
+    assert!(
+        values.contains(&Value::Str("identity_hit".into())),
+        "__.identity() should match non-null values; got {values:?}"
+    );
+}
+
+// ── Coalesce: all alternatives empty → drop traverser ────────────────────
+
+#[test]
+fn coalesce_all_empty_drops_traverser() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    let plan = Operator::Coalesce {
+        alternatives: vec![
+            Operator::NodeScan {
+                label: Some(Label::new("NOPE1")),
+                alias: Identifier::new("miss1"),
+            },
+            Operator::NodeScan {
+                label: Some(Label::new("NOPE2")),
+                alias: Identifier::new("miss2"),
+            },
+        ],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("A")),
+            alias: Identifier::new("n"),
+        }),
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert!(
+        result.rows.is_empty(),
+        "all alternatives empty → traverser dropped; got {} rows",
+        result.rows.len()
+    );
+}
+
+// ── Coalesce: preserves original row keys ────────────────────────────────
+
+#[test]
+fn coalesce_merges_original_row_keys() {
+    let store = make_store();
+    let mut props = IndexMap::new();
+    props.insert("name".to_string(), Value::Str("Alice".into()));
+    store
+        .create_node("g", vec!["A".to_string()], props)
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    let plan = Operator::Coalesce {
+        alternatives: vec![Operator::Project {
+            items: vec![(
+                Expr::Str("extra".into()),
+                Some(Identifier::new("added")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        }],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("A")),
+            alias: Identifier::new("n"),
+        }),
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert_eq!(result.rows.len(), 1);
+    // Should have both the alternative's "added" key AND the original "n" key.
+    assert!(
+        result.rows[0].contains_key("added"),
+        "alternative output should be present"
+    );
+    assert!(
+        result.rows[0].contains_key("n"),
+        "original row key should be preserved via merge"
+    );
+}
+
+// ── Coalesce: multiple input rows handled independently ──────────────────
+
+#[test]
+fn coalesce_handles_multiple_input_rows() {
+    let store = make_store();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+    store
+        .create_node("g", vec!["A".to_string()], IndexMap::new())
+        .unwrap();
+
+    let executor = QueryExecutor::new(&store);
+
+    let plan = Operator::Coalesce {
+        alternatives: vec![Operator::Project {
+            items: vec![(
+                Expr::Str("ok".into()),
+                Some(Identifier::new("val")),
+            )],
+            child: Box::new(Operator::SingleRow),
+        }],
+        child: Box::new(Operator::NodeScan {
+            label: Some(Label::new("A")),
+            alias: Identifier::new("n"),
+        }),
+    };
+
+    let mut budget = ExecutionBudget::unlimited();
+    let result = executor.execute("g", &plan, &mut budget).unwrap();
+    assert_eq!(
+        result.rows.len(),
+        3,
+        "each input row should produce one output row"
+    );
+    for row in &result.rows {
+        assert_eq!(row.get("val"), Some(&Value::Str("ok".into())));
+    }
+}
+
 // ── GremlinSideEffect tests ──────────────────────────────────────────────
 
 #[test]

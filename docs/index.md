@@ -32,6 +32,7 @@ A multi-form-factor Rust graph engine for openCypher, Gremlin, and GQL (ISO/IEC 
 - [**Gremlin GraphSON Property Serialization**](gremlin-graphson-properties) — How vertex/edge properties are resolved from the store and serialized in GraphSON v3 output; fallback behavior; property conversion reference
 - [**Batch Read Error Handling**](batch-read-error-handling) — How `sd2-redis-store` detects and surfaces partial data corruption during batch node/edge reads; fail-fast semantics, observability, and testing contract
 - [**Gremlin Error Handling**](gremlin-error-handling) — Error guarantees across the Gremlin pipeline: parse, compile, and execution errors; no-silent-failure contract; integer overflow protection; type-safe map merging
+- [**Gremlin Executor Module Map**](gremlin-executor-modules) — Internal module layout for the Gremlin executor: branch/, side_effect/, helpers, import conventions, and guide for adding new steps
 - [Authentication](auth) — Configure auth for the REST API (Entra ID JWT), Bolt (password), and Gremlin WebSocket (bearer token)
 - [Secrets Configuration](secrets) — Repository secrets inventory, creation, rotation, and monitoring
 - [ACR Mirror Workflow](reference/acr-mirror-workflow) — How `ghcr-publish` mirrors every published GHCR tag into `sd2mainend655uvglnfeacr.azurecr.io`
