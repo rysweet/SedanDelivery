@@ -13,7 +13,7 @@ cypher-core        = { path = "../cypher-core" }
 sd2-redis-store = { path = "../sd2-redis-store" }
 gremlin-core    = { path = "../gremlin-core" }
 tokio            = { workspace = true }
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
 serde            = { workspace = true }
 serde_json       = { workspace = true }
 tracing          = { workspace = true }
@@ -25,7 +25,7 @@ thiserror        = { workspace = true }
 axum             = { version = "0.8", default-features = false, features = ["tokio", "http1", "json"] }
 
 [dev-dependencies]
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
 serde_json       = { workspace = true }
 uuid             = { version = "1", features = ["v4"] }
 tokio            = { workspace = true }
