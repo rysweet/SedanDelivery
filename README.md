@@ -55,21 +55,19 @@ gh secret set AZURE_CLIENT_ID     --body "$(echo $SP | jq -r .appId)"
 gh secret set AZURE_CLIENT_SECRET --body "$(echo $SP | jq -r .password)"
 gh secret set AZURE_TENANT_ID     --body "$(echo $SP | jq -r .tenant)"
 gh secret set AZURE_SUBSCRIPTION_ID --body "${SUBSCRIPTION_ID}"
-BRANCH_NAME="$(git rev-parse --abbrev-ref HEAD)"
-BRANCH_ENV="$(printf '%s' "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9-]/-/g' | tr '[:upper:]' '[:lower:]' | cut -c1-20 | sed 's/^-*//;s/-*$//')"
-gh secret set DEPLOY_BOLT_TLS_CERT_PEM --env "${BRANCH_ENV}" < bolt-cert.pem
-gh secret set DEPLOY_BOLT_TLS_KEY_PEM  --env "${BRANCH_ENV}" < bolt-key.pem
 
-# 4. Deploy (triggers the workflow manually)
-gh workflow run deploy.yml --ref "${BRANCH_NAME}" -f environment=branch -f branch_name="${BRANCH_NAME}"
-
-# 5. Or: create a PR and add the 'deploy' label
-gh pr create --title "my feature" --body "test deploy"
-gh pr edit --add-label deploy
+# 4. Deploy manually with the Azure CLI / Bicep templates in infra/
+#    (see docs/DEPLOY.md for the full step-by-step guide)
+az deployment group create --resource-group "<your-rg>" \
+  --template-file infra/main.bicep --parameters @infra/main.parameters.json
 ```
 
-A bot comment will post the Redis/Bolt endpoints plus the Bolt password retrieval
-command when the deployment completes (~8 minutes).
+> **Note:** The automated GitHub Actions deployment workflows (`deploy.yml`,
+> `undeploy.yml`, `cleanup-deployments.yml`, GHCR/Pages publishing, and auto
+> release) were removed when this repo came under Simard stewardship, which
+> focuses on CI, quality, and supply-chain health rather than automated
+> deployment. Deploy manually using the Bicep templates in `infra/` — see
+> [docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Embed in your Rust app (no server needed)
 
@@ -266,11 +264,9 @@ RETURN a.name, b.name
 
 ## Deployment details
 
-| Trigger | Environment | What happens |
-|---------|-------------|-------------|
-| PR + `deploy` label | Isolated per-branch | Provisions ACR + Container Apps + persistent storage |
-| Push to `main` | Production | Updates the production deployment |
-| `workflow_dispatch` | Manual | Deploy any branch on demand |
+Deployment is performed manually via the Azure Bicep templates in `infra/`
+(the automated GitHub Actions deployment workflows have been removed — see the
+note in [Deploy to Azure](#deploy-to-azure)).
 
 Each environment gets its own resource group (`rg-sd2-{name}`) with:
 - Azure Container Registry (builds Docker images)
@@ -285,7 +281,7 @@ Each environment gets its own resource group (`rg-sd2-{name}`) with:
 
 **Full deployment guide**: [docs/DEPLOY.md](docs/DEPLOY.md) — prerequisites, step-by-step setup, scaling, HA configuration, troubleshooting.
 
-Cleanup: remove the `deploy` label, or run the **Undeploy** workflow.
+Cleanup: delete the environment's resource group with `az group delete`.
 
 ## Fabric Graph Replication
 
